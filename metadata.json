@@ -1,0 +1,8 @@
+{
+  "name": "Torre de Controle Operacional - Cobrança Alto & Leste",
+  "description": "Sistema de triagem operacional Sabesp com Motor de Execuções, Motor de Pendências, Higienizador Matemático de PDEs, Radar Anti-Retrabalho, SLAs Restab/Piso e Faturamento com Sucesso Diário.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

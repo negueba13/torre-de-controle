@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@layer utilities {
+  @keyframes pulse-fast {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.6;
+      transform: scale(0.98);
+    }
+  }
+
+  @keyframes glow-red {
+    0%, 100% {
+      box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+    }
+    50% {
+      box-shadow: 0 0 25px rgba(239, 68, 68, 0.85);
+    }
+  }
+
+  @keyframes glow-amber {
+    0%, 100% {
+      box-shadow: 0 0 10px rgba(245, 158, 11, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 20px rgba(245, 158, 11, 0.7);
+    }
+  }
+
+  .animate-pulse-fast {
+    animation: pulse-fast 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .glow-red {
+    animation: glow-red 2s infinite;
+  }
+
+  .glow-amber {
+    animation: glow-amber 2s infinite;
+  }
+}
+
+/* Custom scrollbar for dense operational tables */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b0f19;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
