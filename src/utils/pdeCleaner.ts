@@ -1,7 +1,7 @@
-import { PALAVRAS_INFRUTIFERAS, TABELA_DEPARA, FERIADOS_SP, SERVICOS_COBRANCA, isServicoCobranca } from './dePara';
-import { AgregacaoItem } from '../types';
+import { PALAVRAS_INFRUTIFERAS, TABELA_DEPARA, TABELA_DEPARA_EDITAL, FERIADOS_SP, SERVICOS_COBRANCA, isServicoCobranca } from './dePara';
+import { AgregacaoItem, HistoricoPDE } from '../types';
 
-export { SERVICOS_COBRANCA, isServicoCobranca };
+export { SERVICOS_COBRANCA, isServicoCobranca, TABELA_DEPARA_EDITAL };
 
 /**
  * 🧹 HIGIENIZADOR MATEMÁTICO DE PDES
@@ -48,13 +48,73 @@ export function normalize(str: unknown): string {
 
 /**
  * Determina se um resultado é infrutífero
+ * REGRA SABESP/ENORSUL:
+ * - O resultado da negociação da TSS negociação via POS / PIX tem que ser pagamento efetivado via POS ou PIX.
+ * - Negociação infrutífera conta como visita infrutífera.
+ * - Para ser o serviço realmente executado para contabilizar para o colaborador, o resultado tem que ser pagamento efetivado via POS ou PIX.
  */
-export function isInfrutifero(resultado: string): boolean {
+export function isInfrutifero(resultado: string, descricao: string = ''): boolean {
   const norm = normalize(resultado);
   if (!norm) return false;
   // Se for fim do dia ou baixa interna, não é considerado visita infrutífera ao imóvel
   if (isFimDoDiaOuBaixaInterna(resultado)) return false;
+
+  // 1. Termo explícito de negociação infrutífera ou sem acordo (inclusive PIX)
+  if (
+    norm.includes('NEGOCIACAO INFRUTIFERA') ||
+    norm.includes('NEGOCIACAO SEM ACORDO') ||
+    norm.includes('NEGOCIACAO SEM SUCESSO') ||
+    norm.includes('NEGOCIACAO NAO ACEITA') ||
+    norm.includes('NEGOCIACAO RECUSADA') ||
+    norm.includes('RECUSOU NEGOCIAR') ||
+    norm.includes('SEM ACORDO NEGOCIACAO') ||
+    norm.includes('PIX INFRUTIFER') ||
+    norm.includes('PIX RECUSAD') ||
+    norm.includes('PIX NAO ACEIT') ||
+    norm.includes('PIX SEM SUCESSO')
+  ) {
+    return true;
+  }
+
+  // 2. Se a TSS for Negociação via POS / PIX:
+  // Para ser serviço realmente executado e contabilizar para o colaborador,
+  // o resultado TEM QUE SER pagamento efetivado via POS ou PIX.
+  // Qualquer outro resultado nessa TSS conta como visita infrutífera!
+  if (isTSSNegociacaoPOS(descricao)) {
+    if (!isNegociacaoPOSEfetivada(resultado, descricao)) {
+      return true;
+    }
+  }
+
+  // 3. Se o próprio resultado indicar qualquer negociação ou menção a POS ou PIX (exceto reposição de piso),
+  // e NÃO for pagamento efetivado via POS ou PIX, conta como visita infrutífera!
+  const citaPOSouPIX = (norm.includes('POS') && !norm.includes('REPOSIC') && !norm.includes('REPOR')) || norm.includes('PIX');
+  if ((norm.includes('NEGOCIAC') || citaPOSouPIX) && !isNegociacaoPOSEfetivada(resultado, descricao)) {
+    return true;
+  }
+
+  // 4. Demais palavras-chave clássicas de infrutíferas (morador ausente, fechado, recusa, faturas pagas, etc.)
   return PALAVRAS_INFRUTIFERAS.some((k) => norm.includes(normalize(k)));
+}
+
+/**
+ * Identifica se a TSS ou Descrição de Serviço é Negociação de Débitos via POS ou PIX
+ */
+export function isTSSNegociacaoPOS(descricao: string): boolean {
+  if (!descricao) return false;
+  const norm = normalize(descricao);
+  // Não confundir com Reposição de Piso
+  if (norm.includes('REPOSIC') || norm.includes('REPOR')) return false;
+  return (
+    norm.includes('NEGOCIAC') ||
+    norm.includes('VIA POS') ||
+    norm.includes('NO POS') ||
+    norm.includes('VIA PIX') ||
+    norm.includes('NO PIX') ||
+    (norm.includes('DEBITO') && (norm.includes('POS') || norm.includes('PIX'))) ||
+    (/\bPOS\b/.test(norm)) ||
+    (/\bPIX\b/.test(norm))
+  );
 }
 
 /**
@@ -108,7 +168,7 @@ export function isCorteOuSupressao(descricaoOuResultado: string): boolean {
 export function isCorteEfetivo(resultado: string): boolean {
   const norm = normalize(resultado);
   if (!norm) return false;
-  if (norm.includes('POS') || norm.includes('NEGOCIAC')) return false;
+  if (norm.includes('POS') || norm.includes('NEGOCIAC') || norm.includes('INFRUTIFER')) return false;
   return norm.includes('CORTADA') || norm.includes('CORTE') || norm.includes('CORTAR') || norm.includes('CORRIGIDO CORTE');
 }
 
@@ -118,22 +178,228 @@ export function isCorteEfetivo(resultado: string): boolean {
 export function isSupressaoEfetiva(resultado: string): boolean {
   const norm = normalize(resultado);
   if (!norm) return false;
-  if (norm.includes('POS') || norm.includes('NEGOCIAC')) return false;
+  if (norm.includes('POS') || norm.includes('NEGOCIAC') || norm.includes('INFRUTIFER')) return false;
   return norm.includes('SUPRIMIDA') || norm.includes('SUPRESSAO') || norm.includes('SUPRIMIR') || norm.includes('CORRIGIDA SUPRESSAO');
 }
 
 /**
- * Identifica se é Negociação via POS (maquininha de cartão)
+ * Identifica se é estritamente um Restabelecimento executado
  */
-export function isNegociacaoPOS(resultado: string, descricao: string = ''): boolean {
+export function isRestabelecimentoEfetivo(resultado: string, descricao: string = ''): boolean {
   const normRes = normalize(resultado);
   const normDesc = normalize(descricao);
-  return (
+  if (!normRes && !normDesc) return false;
+  if (
+    normRes.includes('INFRUTIFER') ||
+    normRes.includes('RECUS') ||
+    normRes.includes('AUSENT') ||
+    normRes.includes('FECHAD') ||
     normRes.includes('POS') ||
-    normRes.includes('NEGOCIAC') ||
-    normDesc.includes('NEGOCIACAO DE DEBITOS VIA POS') ||
-    normDesc.includes('NEGOCIACAO POS')
+    normRes.includes('PIX') ||
+    normRes.includes('CORTE') ||
+    normRes.includes('CORTADA') ||
+    normRes.includes('SUPRIM')
+  ) {
+    return false;
+  }
+
+  const temTermoRestab = normRes.includes('RESTAB') || normDesc.includes('RESTAB');
+  if (!temTermoRestab) return false;
+
+  return (
+    normRes.includes('RESTABELEC') ||
+    normRes.includes('RESTAB') ||
+    normRes.includes('EXECUTADO EM CONFORMIDADE') ||
+    normRes.includes('CONFORME') ||
+    normRes.includes('REGULARIZAD')
   );
+}
+
+/**
+ * Identifica se é estritamente uma Religação executada
+ */
+export function isReligacaoEfetiva(resultado: string, descricao: string = ''): boolean {
+  const normRes = normalize(resultado);
+  const normDesc = normalize(descricao);
+  if (!normRes && !normDesc) return false;
+  if (
+    normRes.includes('INFRUTIFER') ||
+    normRes.includes('RECUS') ||
+    normRes.includes('AUSENT') ||
+    normRes.includes('FECHAD') ||
+    normRes.includes('POS') ||
+    normRes.includes('PIX') ||
+    normRes.includes('CORTE') ||
+    normRes.includes('CORTADA') ||
+    normRes.includes('SUPRIM')
+  ) {
+    return false;
+  }
+
+  const temTermoRelig = normRes.includes('RELIG') || normDesc.includes('RELIG');
+  if (!temTermoRelig) return false;
+
+  return (
+    normRes.includes('RELIGAC') ||
+    normRes.includes('RELIGADA') ||
+    normRes.includes('RELIG') ||
+    normRes.includes('EXECUTADO EM CONFORMIDADE') ||
+    normRes.includes('CONFORME') ||
+    normRes.includes('REGULARIZAD')
+  );
+}
+
+/**
+ * RESTABELECIMENTO E RELIGAÇÃO É UM SÓ (OPERACIONAL SABESP/ENORSUL):
+ * Identifica se a ordem executada foi Restabelecimento ou Religação de Água
+ */
+export function isRestabelecimentoOuReligacao(resultado: string, descricao: string = ''): boolean {
+  return isRestabelecimentoEfetivo(resultado, descricao) || isReligacaoEfetiva(resultado, descricao);
+}
+
+/**
+ * REGRA OFICIAL DE PDE VICIADO (SABESP / ENORSUL):
+ * Um imóvel é considerado PDE Viciado quando:
+ * 1. Teve MAIS DE 3 VISITAS REAIS (> 3, ou seja, 4 ou mais);
+ * 2. Teve MAIS DE 1 ORDEM DE SERVIÇO (OS) DISTINTA gerada pela Sabesp (> 1);
+ * 3. 100% das baixas de 'Fim do Dia' ou baixas internas são expurgadas!
+ */
+export function isPDEViciado(item: HistoricoPDE): boolean {
+  if (!item) return false;
+  const visitas = Array.isArray(item.historicoDetalhado) ? item.historicoDetalhado : [];
+  
+  // Expurga 100% de 'Fim do Dia' ou baixas administrativas
+  const visitasReais = visitas.filter((v) => !v.isFimDoDia && !isFimDoDiaOuBaixaInterna(v.resultado));
+  const totalVisitasReais = visitasReais.length > 0 ? visitasReais.length : (item.totalVisitas || 0);
+
+  // Mapeia todas as OSs distintas
+  const osSet = new Set<string>();
+  if (item.os && item.os.trim()) osSet.add(item.os.trim());
+  visitasReais.forEach((v) => {
+    if (v.os && v.os.trim()) osSet.add(v.os.trim());
+  });
+
+  return totalVisitasReais > 3 && osSet.size > 1;
+}
+
+/**
+ * Converte qualquer string de data brasileira (DD/MM/YYYY) ou ISO (YYYY-MM-DD) para Date confiável
+ */
+export function parseDateString(str: string): Date | null {
+  if (!str) return null;
+  const s = str.trim();
+  if (s.includes('/')) {
+    const parts = s.split(' ')[0].split('/');
+    if (parts.length === 3) {
+      const dia = parseInt(parts[0], 10);
+      const mes = parseInt(parts[1], 10) - 1;
+      let ano = parseInt(parts[2], 10);
+      if (ano < 100) ano += 2000;
+      const d = new Date(ano, mes, dia);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+  if (s.includes('-')) {
+    const parts = s.split('T')[0].split('-');
+    if (parts.length === 3) {
+      const ano = parseInt(parts[0], 10);
+      const mes = parseInt(parts[1], 10) - 1;
+      const dia = parseInt(parts[2], 10);
+      const d = new Date(ano, mes, dia);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+  return null;
+}
+
+/**
+ * Identifica se a negociação via POS ou PIX foi REALMENTE EXECUTADA com pagamento efetivado.
+ * REGRA SABESP/ENORSUL: Para ser o serviço realmente executado e contabilizar para o colaborador,
+ * o resultado TEM QUE SER "PAGAMENTO EFETIVADO VIA POS" ou "PAGAMENTO EFETIVADO VIA PIX".
+ * Qualquer negociação sem pagamento ou infrutífera conta como visita infrutífera!
+ */
+export function isNegociacaoPOSEfetivada(resultado: string, descricao: string = ''): boolean {
+  const normRes = normalize(resultado);
+  if (!normRes) return false;
+
+  // Se tiver termo infrutífero, recusa, insucesso ou impedimento, NUNCA é pagamento efetivado
+  if (
+    normRes.includes('INFRUTIFER') ||
+    normRes.includes('RECUS') ||
+    normRes.includes('NAO ACEIT') ||
+    normRes.includes('NAO PERMIT') ||
+    normRes.includes('SEM ACORDO') ||
+    normRes.includes('SEM SUCESSO') ||
+    normRes.includes('INSUCESSO') ||
+    normRes.includes('NAO QUITAD') ||
+    normRes.includes('NAO PAGO') ||
+    normRes.includes('NAO EFETIVAD') ||
+    normRes.includes('NAO EFETUAD') ||
+    normRes.includes('CANCELAD') ||
+    normRes.includes('IMPED') ||
+    normRes.includes('FECHAD') ||
+    normRes.includes('AUSENT')
+  ) {
+    return false;
+  }
+
+  // 1. Pagamento Efetivado via PIX
+  const ehPixEfetivado =
+    normRes.includes('VIA PIX') ||
+    normRes.includes('NO PIX') ||
+    normRes.includes('PGTO PIX') ||
+    normRes.includes('PAGAMENTO PIX') ||
+    normRes.includes('PAGTO VIA PIX') ||
+    normRes.includes('PAGAMENTO VIA PIX') ||
+    normRes.includes('CLIENTE EFETUOU PGTO VIA PIX') ||
+    normRes.includes('PAGAMENTO EFETIVADO VIA PIX') ||
+    normRes.includes('PAGAMENTO EFETUADO VIA PIX') ||
+    normRes.includes('PAGO VIA PIX') ||
+    normRes.includes('RECEBIDO VIA PIX') ||
+    normRes.includes('QUITADO VIA PIX') ||
+    (normRes.includes('PIX') && (normRes.includes('EFETIV') || normRes.includes('EFETU') || normRes.includes('PAGO') || normRes.includes('QUIT') || normRes.includes('RECEB')));
+
+  if (ehPixEfetivado) return true;
+
+  // 2. Pagamento Efetivado via POS
+  return (
+    normRes.includes('PAGAMENTO EFETIVADO VIA POS') ||
+    normRes.includes('PAGAMENTO EFETIVADO NO POS') ||
+    normRes.includes('PAGAMENTO EFETIVADO') ||
+    normRes.includes('PAGAMENTO EFETUADO VIA POS') ||
+    normRes.includes('PAGAMENTO EFETUADO NO POS') ||
+    normRes.includes('PAGAMENTO EFETUADO') ||
+    normRes.includes('CLIENTE EFETUOU PGTO VIA POS') ||
+    normRes.includes('PAGTO EFETIVADO VIA POS') ||
+    normRes.includes('PAGTO EFETIVADO NO POS') ||
+    normRes.includes('PAGTO EFETIVADO') ||
+    normRes.includes('PAGTO EFETUADO VIA POS') ||
+    normRes.includes('PAGTO EFETUADO NO POS') ||
+    normRes.includes('PAGTO EFETUADO') ||
+    normRes.includes('EFETIVADO VIA POS') ||
+    normRes.includes('EFETUADO VIA POS') ||
+    normRes.includes('PAGAMENTO REALIZADO VIA POS') ||
+    normRes.includes('PAGAMENTO REALIZADO') ||
+    normRes.includes('PAGO VIA POS') ||
+    normRes.includes('RECEBIDO VIA POS') ||
+    normRes.includes('QUITADO VIA POS') ||
+    normRes.includes('QUITACAO VIA POS') ||
+    normRes.includes('RECEBIMENTO VIA POS') ||
+    normRes.includes('POS/PIX') ||
+    (normRes.includes('EFETIVAD') && normRes.includes('POS')) ||
+    (normRes.includes('EFETUAD') && normRes.includes('POS')) ||
+    (normRes.includes('PAGO') && normRes.includes('POS')) ||
+    (normRes.includes('QUITAD') && normRes.includes('POS')) ||
+    (normRes.includes('RECEBID') && normRes.includes('POS')) ||
+    (normRes.includes('PAGAMENTO') && normRes.includes('POS'))
+  );
+}
+
+/**
+ * Mantém retrocompatibilidade: aponta estritamente para a regra de pagamento efetivado
+ */
+export function isNegociacaoPOS(resultado: string, descricao: string = ''): boolean {
+  return isNegociacaoPOSEfetivada(resultado, descricao);
 }
 
 /**
@@ -195,8 +461,18 @@ export function formatDataHoraVencimento(d: Date | null | undefined): string {
 /**
  * Determina o motivo padronizado da falha infrutífera
  */
-export function categorizarMotivoInfrutifero(resultado: string): string {
+export function categorizarMotivoInfrutifero(resultado: string, descricao: string = ''): string {
   const norm = normalize(resultado);
+  if (
+    norm.includes('NEGOCIAC') ||
+    norm.includes('SEM ACORDO') ||
+    norm.includes('NAO ACEIT') ||
+    norm.includes('SEM SUCESSO') ||
+    (isTSSNegociacaoPOS(descricao) && !isNegociacaoPOSEfetivada(resultado, descricao)) ||
+    ((norm.includes('POS') && !norm.includes('REPOSIC')) && !isNegociacaoPOSEfetivada(resultado, descricao))
+  ) {
+    return 'Negociação Infrutífera';
+  }
   if (norm.includes('AUSENTE')) return 'Morador Ausente';
   if (norm.includes('FECHADO') || norm.includes('TRANCADO')) return 'Imóvel Fechado';
   if (norm.includes('PERMITIU') || norm.includes('RECUS')) return 'Não Permitiu / Recusado';
@@ -209,15 +485,70 @@ export function categorizarMotivoInfrutifero(resultado: string): string {
 }
 
 /**
- * Calcula o valor financeiro do serviço segundo o DE-PARA
+ * Calcula o valor financeiro do serviço segundo o DE-PARA Oficial do Edital 3.5
+ * REGRAS SABESP / ENORSUL:
+ * - O resultado da negociação da TSS negociação via POS / PIX tem que ser pagamento efetivado via POS ou PIX (R$ 44,28).
+ * - Negociação infrutífera conta como visita infrutífera (valor zero).
+ * - Apresentação de faturas pagas exige validação da Sabesp e da Diretoria para medição (R$ 0 na medição direta).
  */
-export function calcularValorServico(resultado: string): number {
+export function calcularValorServico(resultado: string, descricao: string = ''): number {
   const norm = normalize(resultado);
   if (!norm) return 0;
 
+  // Se for infrutífero, valor é zero
+  if (isInfrutifero(resultado, descricao)) return 0;
+
+  // Cliente apresentou faturas pagas: conforme regra contratual do Edital 3.5,
+  // exige validação formal da Sabesp e da Diretoria para compor a medição. Fica segregado em auditoria!
+  if (norm.includes('FATURAS PAGAS') || norm.includes('FATURA PAGA') || norm.includes('APRESENTOU COMPROVANTE')) {
+    return 0;
+  }
+
+  // Se for TSS Negociação via POS / PIX, SÓ remunera se for pagamento efetivado via POS ou PIX
+  if (isTSSNegociacaoPOS(descricao) && !isNegociacaoPOSEfetivada(resultado, descricao)) {
+    return 0;
+  }
+
+  // Se o resultado citar POS, PIX ou NEGOCIAÇÃO, SÓ gera valor financeiro se for pagamento efetivado!
+  const citaPOSouPIX = (norm.includes('POS') && !norm.includes('REPOSIC') && !norm.includes('REPOR')) || norm.includes('PIX');
+  if ((norm.includes('NEGOCIAC') || citaPOSouPIX) && !isNegociacaoPOSEfetivada(resultado, descricao)) {
+    return 0;
+  }
+
+  // Se for pagamento efetivado via POS ou PIX, remunera exatamente R$ 44,28
+  if (isNegociacaoPOSEfetivada(resultado, descricao)) {
+    return 44.28;
+  }
+
+  const ehRamal = norm.includes('RAMAL');
+
+  // 1. Busca por correspondência exata na TABELA_DEPARA_EDITAL
+  for (const item of TABELA_DEPARA_EDITAL) {
+    const itemNorm = normalize(item.resultado);
+    if (norm === itemNorm) {
+      if (item.requerValidacaoDiretoria) return 0;
+      if (ehRamal && item.tipo === 'ramal') return item.preco;
+      if (!ehRamal && item.tipo !== 'ramal') return item.preco;
+    }
+  }
+
+  // 2. Busca por contenção na TABELA_DEPARA_EDITAL
+  for (const item of TABELA_DEPARA_EDITAL) {
+    const itemNorm = normalize(item.resultado);
+    if (norm.includes(itemNorm)) {
+      if (item.requerValidacaoDiretoria) return 0;
+      if (ehRamal && item.tipo === 'ramal') return item.preco;
+      if (!ehRamal && item.tipo !== 'ramal') return item.preco;
+    }
+  }
+
+  // 3. Fallback na TABELA_DEPARA padrão
   for (const item of TABELA_DEPARA) {
     if (norm.includes(normalize(item.res))) {
-      if (item.ambiguo && norm.includes('RAMAL') && item.precoRamal) {
+      if ((item.res === 'POS' || item.res === 'PIX') && !isNegociacaoPOSEfetivada(resultado, descricao)) {
+        continue;
+      }
+      if (item.ambiguo && ehRamal && item.precoRamal) {
         return item.precoRamal;
       }
       return item.preco;
@@ -227,17 +558,40 @@ export function calcularValorServico(resultado: string): number {
 }
 
 /**
- * Inferência da Frente Operacional
+ * Inferência da Frente Operacional (SABESP / ENORSUL):
+ * - Município São Paulo: Cobrança Leste
+ * - A única exceção que mesmo em análise regional pertence à Cobrança Leste é o Itaim Paulista
+ * - Tudo que for diferente de São Paulo (ex: Suzano, Poá, Mogi das Cruzes, Ferraz, Itaquaquecetuba, etc.) é Cobrança Alto Tietê
  */
-export function inferirFrente(descricao: string, municipio = ''): string {
-  const d = normalize(descricao);
+export function inferirFrente(descricao: string, municipio = '', bairro = ''): string {
   const m = normalize(municipio);
+  const b = normalize(bairro);
+  const d = normalize(descricao);
 
-  if (d.includes('HIDRO') || d.includes('AFERI')) return 'Hidrometria e Aferição';
-  if (d.includes('VISTORIA') || d.includes('IRREG') || d.includes('PERDA') || d.includes('ANOMALIA')) return 'Irregularidade';
-  if (d.includes('ALTO') || d.includes('TIETE') || m.includes('MOGI') || m.includes('SUZANO') || m.includes('ITAQUA') || m.includes('POÁ') || m.includes('FERRAZ')) {
+  // A ÚNICA EXCEÇÃO: Itaim Paulista pertence à Cobrança Leste
+  if (m.includes('ITAIM') || b.includes('ITAIM') || d.includes('ITAIM')) {
+    return 'Cobrança Leste';
+  }
+
+  // Município São Paulo -> Cobrança Leste
+  if (m.includes('SAO PAULO') || m === 'SP' || m.includes('S.PAULO') || m.includes('CAPITAL')) {
+    return 'Cobrança Leste';
+  }
+
+  // Tudo que for município diferente de São Paulo (Suzano, Poá, Mogi, Ferraz, Itaquá, etc.) -> Cobrança Alto Tietê
+  if (m && !m.includes('SAO PAULO')) {
     return 'Cobrança Alto Tietê';
   }
+
+  // Caso município não tenha vindo preenchido, verificar se a descrição ou bairro remete ao Alto Tietê
+  if (
+    d.includes('ALTO') || d.includes('TIETE') || d.includes('MOGI') || d.includes('SUZANO') ||
+    d.includes('POA') || d.includes('ITAQUA') || d.includes('FERRAZ') || d.includes('ARUJA') ||
+    b.includes('MOGI') || b.includes('SUZANO') || b.includes('POA') || b.includes('ITAQUA') || b.includes('FERRAZ')
+  ) {
+    return 'Cobrança Alto Tietê';
+  }
+
   return 'Cobrança Leste';
 }
 

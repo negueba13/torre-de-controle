@@ -11,6 +11,10 @@ export interface Operador {
   ativo?: boolean;
 }
 
+export type OperadorEquipe = Operador;
+
+export { METAS_PADRAO } from '../utils/dePara';
+
 export interface HistoricoVisitaItem {
   data: string;
   resultado: string;
@@ -77,10 +81,14 @@ export interface RetrabalhoItem {
   ultimaData: string;
   motivoFalhaAnterior: string;
   operadorAnterior: string;
-  tipoRetrabalho: 'INFRUTIFERO_ANTERIOR' | 'MULTIVISITAS' | 'DUPLICIDADE_CARTEIRA';
+  tipoRetrabalho: 'INFRUTIFERO_ANTERIOR' | 'MULTIVISITAS' | 'DUPLICIDADE_CARTEIRA' | 'PDE_VICIADO';
   duplicadaNaCarteira?: boolean;
   historicoVisitas?: HistoricoVisitaItem[];
   isCobranca?: boolean;
+  novaCondicao?: string;
+  statusExecucao?: 'EXECUTADO' | 'PENDENTE' | 'INFRUTIFERO_REINCIDENTE' | 'NEGOCIADO_POS' | 'CORTADO' | 'SUPRIMIDO' | 'RESTABELECIDO';
+  dataUltimaExecucao?: string;
+  operadorUltimaExecucao?: string;
 }
 
 export interface CarteiraLivreItem {
@@ -102,6 +110,17 @@ export interface CarteiraLivreItem {
   tipoCobranca?: 'CORTE' | 'SUPRESSAO' | 'VISTORIA' | 'OUTRO';
 }
 
+export type TipoAgregacaoProducao = 'DIA' | 'SEMANA' | 'MES' | 'CUSTOM' | 'COMPARATIVO';
+
+export interface IntervaloDatasCustom {
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string; // YYYY-MM-DD
+  nomePreset?: string;
+  compararComAnterior?: boolean;
+  dataInicioComp?: string;
+  dataFimComp?: string;
+}
+
 export interface ProducaoDiariaItem {
   data: string; // Formato DD/MM/AAAA
   totalOS: number;
@@ -109,6 +128,9 @@ export interface ProducaoDiariaItem {
   cortesSupressoes: number;
   cortes?: number;
   supressoes?: number;
+  restabes?: number;
+  religacoes?: number;
+  restabesReligacoes?: number;
   negociacoesPOS?: number;
   reposicoesPiso?: number;
   faturasPagas?: number;
@@ -131,6 +153,9 @@ export interface OperadorProducao {
   cortesSupressoes: number;
   cortes?: number;
   supressoes?: number;
+  restabes?: number;
+  religacoes?: number;
+  restabesReligacoes?: number;
   negociacoesPOS?: number;
   cortesViraramPOS?: number;
   reposicoesPiso?: number;
@@ -152,6 +177,14 @@ export interface OperadorProducao {
     ordensVirgensPerc: number;
     sugestaoAcao: string;
   };
+  comparativo?: {
+    faturadoAnterior: number;
+    cortesAnterior: number;
+    positivasAnterior: number;
+    variacaoFaturadoPerc: number;
+    variacaoCortesPerc: number;
+    crescimento: boolean;
+  };
 }
 
 export interface OperadorDossie {
@@ -164,6 +197,9 @@ export interface OperadorDossie {
   cortesSupressoes: number;
   cortes: number;
   supressoes: number;
+  restabes?: number;
+  religacoes?: number;
+  restabesReligacoes?: number;
   negociacoesPOS: number;
   cortesViraramPOS: number;
   reposicoesPiso: number;
@@ -246,8 +282,6 @@ export interface RegistroCarga {
   };
 }
 
-export type TipoAgregacaoProducao = 'DIA' | 'SEMANA' | 'MES';
-
 export interface AgregacaoItem {
   id: string;
   rotulo: string;
@@ -267,6 +301,7 @@ export interface SessaoAtiva {
     totalCortesSupressoes: number;
     totalCortes?: number;
     totalSupressoes?: number;
+    totalRestabes?: number;
     totalCortesViraramPOS?: number;
     totalNegociacoesPOS?: number;
     totalReposicoesPiso?: number;

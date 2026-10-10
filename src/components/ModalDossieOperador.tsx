@@ -70,7 +70,8 @@ export const ModalDossieOperador: React.FC<ModalDossieOperadorProps> = ({ dossie
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
-                const msg = `Fala ${dossie.nome}! Aqui é da Supervisão Enorsul/Sabesp.\n\n📊 *Seu Raio-X de Produtividade:*\n• ✂️ Cortes: ${dossie.cortes || 0} | 🔒 Supressões: ${dossie.supressoes || 0}\n• 💳 Negociações POS: ${dossie.negociacoesPOS || 0}\n• 🎯 Taxa de Sucesso Real: ${dossie.percSucesso.toFixed(1)}%\n• 💰 Faturamento: R$ ${formatMoney(dossie.faturado)}\n\nBora manter o foco para batermos as metas contratuais!`;
+                const totalRestabRelig = (dossie.restabes || 0) + (dossie.religacoes || 0);
+                const msg = `Fala ${dossie.nome}! Aqui é da Supervisão Enorsul/Sabesp.\n\n📊 *Seu Raio-X de Produtividade:*\n• ✂️ Cortes: ${dossie.cortes || 0} | 🔒 Supressões: ${dossie.supressoes || 0}\n• 💧 Restabes / Religações: ${totalRestabRelig}\n• 💳 Negociações POS: ${dossie.negociacoesPOS || 0}\n• 🎯 Taxa de Sucesso Real: ${dossie.percSucesso.toFixed(1)}%\n• 💰 Faturamento: R$ ${formatMoney(dossie.faturado)}\n\nBora manter o foco para batermos as metas contratuais!`;
                 navigator.clipboard.writeText(msg).then(() => {
                   alert(`Mensagem para ${dossie.nome} copiada! Cole no WhatsApp.`);
                 });
@@ -195,7 +196,7 @@ export const ModalDossieOperador: React.FC<ModalDossieOperadorProps> = ({ dossie
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-center">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-center">
                   <div className="bg-[#0c101d] border border-blue-500/30 rounded-lg p-2.5">
                     <span className="text-[10px] font-bold text-blue-400 block mb-0.5">✂️ Cortes Só</span>
                     <span className="text-lg font-black text-white font-mono">{dossie.cortes || 0}</span>
@@ -204,6 +205,13 @@ export const ModalDossieOperador: React.FC<ModalDossieOperadorProps> = ({ dossie
                   <div className="bg-[#0c101d] border border-blue-500/20 rounded-lg p-2.5">
                     <span className="text-[10px] font-bold text-slate-300 block mb-0.5">🔒 Supressões</span>
                     <span className="text-lg font-black text-white font-mono">{dossie.supressoes || 0}</span>
+                  </div>
+
+                  <div className="bg-[#0c101d] border border-teal-500/30 rounded-lg p-2.5">
+                    <span className="text-[10px] font-bold text-teal-400 block mb-0.5">💧 Restabes / Relig.</span>
+                    <span className="text-lg font-black text-teal-300 font-mono">
+                      {(dossie.restabes || 0) + (dossie.religacoes || 0)}
+                    </span>
                   </div>
 
                   <div className="bg-[#0c101d] border border-purple-500/40 rounded-lg p-2.5 shadow-sm">
@@ -354,6 +362,9 @@ export const ModalDossieOperador: React.FC<ModalDossieOperadorProps> = ({ dossie
                       <th className="py-2.5 px-3 font-bold text-center text-blue-300">
                         Cortes Sabesp
                       </th>
+                      <th className="py-2.5 px-3 font-bold text-center text-teal-300">
+                        Restabe / Relig.
+                      </th>
                       <th className="py-2.5 px-3 font-bold text-center text-emerald-300">
                         Positivas
                       </th>
@@ -381,6 +392,9 @@ export const ModalDossieOperador: React.FC<ModalDossieOperadorProps> = ({ dossie
                         </td>
                         <td className="py-2 px-3 text-center font-mono font-bold text-blue-400">
                           {dia.cortesSupressoes}
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono font-bold text-teal-300">
+                          {(dia.restabes || 0) + (dia.religacoes || 0)}
                         </td>
                         <td className="py-2 px-3 text-center font-mono font-bold text-emerald-400">
                           {dia.positivas}

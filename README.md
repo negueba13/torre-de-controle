@@ -57,6 +57,22 @@ Segure `Ctrl` e clique no link `http://localhost:3000/` no terminal (ou abra no 
 
 ---
 
+### Uso durante troca ou queda de Wi-Fi
+Os dados da sessão são preservados no armazenamento local do navegador. Se a conexão cair, o painel continua disponível neste dispositivo e tenta sincronizar novamente quando a rede voltar. A sincronização entre dispositivos depende de o servidor continuar acessível.
+
+Ao abrir o painel em outro dispositivo pelo endereço `Network` do terminal, esse endereço depende da rede atual do computador. Ao trocar de Wi-Fi, o IP pode mudar ou a nova rede pode bloquear o acesso; para acesso contínuo entre redes, use um endereço publicado e estável.
+
+### Publicação no Vercel e sessão compartilhada
+
+A rota `api/shared_state.ts` é publicada pelo Vercel como uma Serverless Function em `/api/shared_state`. O frontend usa uma URL relativa (`/api/shared_state`), portanto não precisa de uma URL de produção codificada.
+
+O estado compartilhado é armazenado no Redis do Upstash. Crie uma base Redis pelo Vercel Marketplace e configure estas variáveis de ambiente no projeto Vercel (Production e Preview, conforme necessário):
+
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+
+Depois de salvar as variáveis, faça um novo deploy. A função limita o estado compartilhado a 4 MB para respeitar o limite de payload do ambiente serverless. Para desenvolvimento local, `npm run dev` continua usando o endpoint local do `server.ts`.
+
 ## 🛠️ Scripts Disponíveis
 
 - `npm run dev`: Inicia o servidor local de desenvolvimento na porta 3000.

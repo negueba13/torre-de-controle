@@ -39,7 +39,16 @@ import {
   UserCheck,
   CalendarDays,
   KeyRound,
-  Share2
+  Share2,
+  LayoutGrid,
+  Table,
+  Columns,
+  Filter,
+  Sparkles,
+  UserPlus,
+  Edit3,
+  SlidersHorizontal,
+  ClipboardList
 } from 'lucide-react';
 
 import {
@@ -59,6 +68,7 @@ import {
   ProducaoDiariaItem,
   SessaoAtiva,
   TipoAgregacaoProducao,
+  IntervaloDatasCustom,
   AgregacaoItem,
   ReposicaoPisoItem
 } from './types';
@@ -71,7 +81,13 @@ import {
   isCorteOuSupressao,
   isCorteEfetivo,
   isSupressaoEfetiva,
+  isRestabelecimentoEfetivo,
+  isReligacaoEfetiva,
+  isRestabelecimentoOuReligacao,
+  isPDEViciado,
+  parseDateString,
   isNegociacaoPOS,
+  isTSSNegociacaoPOS,
   isReposicaoPiso,
   isFaturaPagaApresentada,
   formatDataHoraVencimento,
@@ -103,7 +119,16 @@ import { ModalCentralRelatorios } from './components/ModalCentralRelatorios';
 import { ModalImportarArquivos } from './components/ModalImportarArquivos';
 import { ModalJustificarVencimento } from './components/ModalJustificarVencimento';
 import { ModalComparadorOperadores } from './components/ModalComparadorOperadores';
+import { ModalTabelaDePara } from './components/ModalTabelaDePara';
+import { SeletorIntervaloDatas } from './components/SeletorIntervaloDatas';
+import { AbaFaturasPagasAuditoria, FaturaPagaAuditoriaItem } from './components/AbaFaturasPagasAuditoria';
 import { TabelaReposicaoPiso } from './components/TabelaReposicaoPiso';
+import { ExcelColumnFilter } from './components/ExcelColumnFilter';
+import { ModalEditarOperador } from './components/ModalEditarOperador';
+import { ModalCadastroRapidoOperadores } from './components/ModalCadastroRapidoOperadores';
+import { ModalAjusteRapidoEquipe } from './components/ModalAjusteRapidoEquipe';
+import { ClockSLA } from './components/ClockSLA';
+import { PAGE_SIZE, PaginationControls, usePagination } from './components/Pagination';
 import { EQUIPE_DEMO } from './utils/sampleData';
 
 import {
@@ -129,6 +154,7 @@ import {
 } from './utils/indexedDB';
 
 import { METAS_PADRAO } from './utils/dePara';
+import { readExcelInWorker } from './utils/readExcelInWorker';
 
 type TabId =
   | 'dashboard'
@@ -142,11 +168,24 @@ type TabId =
   | 'raiox_infrutiferas'
   | 'equipe';
 
+const SHARED_STATE_TIMEOUT_MS = 5000;
+const PENDING_SHARED_STATE_KEY = 'torre_shared_sync_pending';
+
+async function solicitarEstadoCompartilhado(init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), SHARED_STATE_TIMEOUT_MS);
+
+  try {
+    return await fetch('/api/shared_state', { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export default function App() {
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [frenteFiltro, setFrenteFiltro] = useState<string>('GLOBAL');
-  const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<{ title: string; subtitle: string }>({
     title: '',
@@ -184,6 +223,8 @@ export default function App() {
     totalCortesSupressoes: number;
     totalCortes: number;
     totalSupressoes: number;
+    totalRestabes: number;
+    totalReligacoes: number;
     totalCortesViraramPOS: number;
     totalNegociacoesPOS: number;
     totalReposicoesPiso: number;
@@ -197,6 +238,8 @@ export default function App() {
     totalCortesSupressoes: 0,
     totalCortes: 0,
     totalSupressoes: 0,
+    totalRestabes: 0,
+    totalReligacoes: 0,
     totalCortesViraramPOS: 0,
     totalNegociacoesPOS: 0,
     totalReposicoesPiso: 0,
@@ -208,6 +251,33 @@ export default function App() {
   const [linhasExecucoesBrutas, setLinhasExecucoesBrutas] = useState<Record<string, unknown>[]>([]);
   const [operadorParaComparar, setOperadorParaComparar] = useState<string>('');
   const [modalReposicaoPisoOpen, setModalReposicaoPisoOpen] = useState<boolean>(false);
+  const [modalTabelaDeParaOpen, setModalTabelaDeParaOpen] = useState<boolean>(false);
+
+  // Estados para Gestão Rápida e Fácil de Operadores (Modais e Edição)
+  const [modalEditarOperadorOpen, setModalEditarOperadorOpen] = useState<boolean>(false);
+  const [operadorParaEditar, setOperadorParaEditar] = useState<Operador | null>(null);
+  const [isNovoOperadorModal, setIsNovoOperadorModal] = useState<boolean>(false);
+  const [modalCadastroRapidoLoteOpen, setModalCadastroRapidoLoteOpen] = useState<boolean>(false);
+  const [modalAjusteRapidoEquipeOpen, setModalAjusteRapidoEquipeOpen] = useState<boolean>(false);
+
+  // Estados para Visualização de Resultados (Eliminando o Arrasto Horizontal)
+  const [modoVisualizacaoProducao, setModoVisualizacaoProducao] = useState<'COMPACTA' | 'CARDS' | 'TABELA'>('COMPACTA');
+
+  // Filtros Avançados Estilo Excel & Chips Rápidos
+  const [filtroRapidoChip, setFiltroRapidoChip] = useState<
+    'TODOS' | 'LESTE' | 'ALTO' | 'MOTOS' | 'CARROS' | 'META_BATIDA' | 'NA_TRAVE' | 'ABAIXO_META' | 'MIGUE'
+  >('TODOS');
+  const [excelFiltros, setExcelFiltros] = useState<
+    Record<
+      string,
+      {
+        selected: string[];
+        sort: 'asc' | 'desc' | null;
+        min?: number;
+        max?: number;
+      }
+    >
+  >({});
 
   // Modal para novos operadores detectados na planilha de execuções
   const [modalNovosOperadoresOpen, setModalNovosOperadoresOpen] = useState<boolean>(false);
@@ -251,6 +321,14 @@ export default function App() {
   const [dataFiltro, setDataFiltro] = useState<string>('TODOS');
   const [semanaFiltro, setSemanaFiltro] = useState<string>('TODOS');
   const [mesFiltro, setMesFiltro] = useState<string>('TODOS');
+  const [intervaloCustom, setIntervaloCustom] = useState<IntervaloDatasCustom>({
+    dataInicio: '2026-10-01',
+    dataFim: '2026-10-30',
+    nomePreset: 'Ciclo 1 ao 30 (Outubro/2026)',
+    compararComAnterior: false,
+    dataInicioComp: '2026-07-01',
+    dataFimComp: '2026-07-31'
+  });
   const [operadoresExcluidos, setOperadoresExcluidos] = useState<string[]>([]);
   const [somenteEquipeOficial, setSomenteEquipeOficial] = useState<boolean>(false);
   const [dossieOperadorSelecionado, setDossieOperadorSelecionado] = useState<OperadorDossie | null>(null);
@@ -265,12 +343,17 @@ export default function App() {
   >('TODOS');
   const [itemParaJustificarModal, setItemParaJustificarModal] = useState<UrgenciaItem | null>(null);
   const [searchTermRetrabalho, setSearchTermRetrabalho] = useState<string>('');
-  const [filtroRetrabalhoTipo, setFiltroRetrabalhoTipo] = useState<'TODOS' | 'FALHAS' | 'MULTIVISITAS' | 'DUPLICADAS'>('TODOS');
+  const [filtroRetrabalhoTipo, setFiltroRetrabalhoTipo] = useState<
+    'TODOS' | 'FALHAS' | 'MULTIVISITAS' | 'DUPLICADAS' | 'RESOLVIDOS' | 'VICIADOS'
+  >('TODOS');
   const [itemHistoricoModal, setItemHistoricoModal] = useState<RetrabalhoItem | null>(null);
   const [isReportChefiaOpen, setIsReportChefiaOpen] = useState<boolean>(false);
   const [searchTermOutrasFrentes, setSearchTermOutrasFrentes] = useState<string>('');
   const [searchTermLivre, setSearchTermLivre] = useState<string>('');
   const [buscaEquipe, setBuscaEquipe] = useState<string>('');
+  const [filtroRapidoEquipe, setFiltroRapidoEquipe] = useState<
+    'TODOS' | 'LESTE' | 'ALTO' | 'MOTOS' | 'CARROS' | 'PROPRIA' | 'APOIO' | 'ATIVOS' | 'INATIVOS'
+  >('TODOS');
 
   // Team quick editing mode
   const [isModoEdicaoEquipe, setIsModoEdicaoEquipe] = useState<boolean>(false);
@@ -297,6 +380,55 @@ export default function App() {
     }, 4500);
   }, []);
 
+  const atualizarSLA = useCallback((now: Date) => {
+    setUrgencias((prev) => {
+      let mudou = false;
+      const atualizadas = prev.map((item) => {
+        const diff = formatTempoRestante(item.vencReal, now);
+        if (diff.status === item.statusPrazo && diff.texto === item.tempoFormatado) {
+          return item;
+        }
+        mudou = true;
+        return {
+          ...item,
+          statusPrazo: diff.status,
+          horasRestantes: diff.horasRestantes,
+          tempoFormatado: diff.texto
+        };
+      });
+      return mudou ? atualizadas : prev;
+    });
+  }, []);
+
+  const sincronizarSessaoCompartilhada = useCallback(async (sessao: SessaoAtiva): Promise<boolean> => {
+    try {
+      const resp = await solicitarEstadoCompartilhado({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessao)
+      });
+      if (!resp.ok) {
+        throw new Error(`Servidor respondeu com status ${resp.status}`);
+      }
+
+      try {
+        localStorage.removeItem(PENDING_SHARED_STATE_KEY);
+      } catch (err) {
+        console.error('Não foi possível limpar o indicador de sincronização pendente:', err);
+      }
+      return true;
+    } catch (err) {
+      console.error('Não foi possível sincronizar a sessão compartilhada:', err);
+      try {
+        localStorage.setItem(PENDING_SHARED_STATE_KEY, 'true');
+      } catch (storageError) {
+        console.error('Não foi possível registrar a sincronização pendente:', storageError);
+      }
+      showToast('Sessão salva neste dispositivo. A sincronização será retomada quando a conexão voltar.');
+      return false;
+    }
+  }, [showToast]);
+
   // Helper para copiar PDE de 10 dígitos para o clipboard
   const handleCopiarPDE = useCallback((pde: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -308,14 +440,6 @@ export default function App() {
       setCopiedPde((curr) => (curr === pde ? null : curr));
     }, 2500);
   }, [showToast]);
-
-  // Update clock every 10 seconds for real-time SLA countdown
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 10000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Initial database hydration & session restoration
   useEffect(() => {
@@ -373,15 +497,24 @@ export default function App() {
         // Tenta primeiro sincronizar do servidor compartilhado (/api/shared_state) para que todos que abrirem o link vejam os dados carregados
         let sessaoServidor: SessaoAtiva | null = null;
         try {
-          const resp = await fetch('/api/shared_state');
+          const resp = await solicitarEstadoCompartilhado();
           if (resp.ok) {
             sessaoServidor = await resp.json();
+          } else {
+            console.warn(`Não foi possível carregar a sessão compartilhada (status ${resp.status}).`);
           }
-        } catch {
-          // Servidor offline ou rede local
+        } catch (err) {
+          console.warn('Sessão compartilhada indisponível; usando os dados locais.', err);
         }
 
-        const sessaoEfetiva = sessaoServidor || sessao;
+        const isSessaoValida = (valor: unknown): valor is SessaoAtiva => Boolean(
+          valor &&
+            typeof valor === 'object' &&
+            !Array.isArray(valor) &&
+            typeof (valor as SessaoAtiva).id === 'string'
+        );
+
+        const sessaoEfetiva = isSessaoValida(sessaoServidor) ? sessaoServidor : isSessaoValida(sessao) ? sessao : null;
 
         // Restauração do último serviço carregado (Persistência de Sessão)
         if (sessaoEfetiva) {
@@ -415,7 +548,10 @@ export default function App() {
           if (sessaoEfetiva.duplicidadesCarteiraCount) setDuplicidadesCarteiraCount(sessaoEfetiva.duplicidadesCarteiraCount);
           if (sessaoEfetiva.operadoresExcluidos) setOperadoresExcluidos(sessaoEfetiva.operadoresExcluidos);
 
-          showToast(`💾 Sessão operacional conectada (${sessaoEfetiva.dataSalvamento})!`);
+          const dataSessao = typeof sessaoEfetiva.dataSalvamento === 'string' && sessaoEfetiva.dataSalvamento
+            ? sessaoEfetiva.dataSalvamento
+            : new Date().toLocaleString('pt-BR');
+          showToast(`💾 Sessão operacional conectada (${dataSessao})!`);
         }
       } catch (err) {
         console.error('Erro ao inicializar IndexedDB:', err);
@@ -424,21 +560,52 @@ export default function App() {
     init();
   }, [showToast]);
 
-  // Recalculate remaining SLA times when clock ticks or urgencias change
   useEffect(() => {
-    if (urgencias.length === 0) return;
-    setUrgencias((prev) =>
-      prev.map((item) => {
-        const diff = formatTempoRestante(item.vencReal, currentTime);
-        return {
-          ...item,
-          statusPrazo: diff.status,
-          horasRestantes: diff.horasRestantes,
-          tempoFormatado: diff.texto
-        };
-      })
-    );
-  }, [currentTime]);
+    let sincronizando = false;
+    let ativo = true;
+
+    const aoPerderConexao = () => {
+      showToast('Sem conexão. A sessão continua funcionando e as alterações ficam salvas neste dispositivo.');
+    };
+
+    const aoVoltarConexao = async () => {
+      let sincronizacaoPendente = false;
+      try {
+        sincronizacaoPendente = localStorage.getItem(PENDING_SHARED_STATE_KEY) === 'true';
+      } catch (err) {
+        console.error('Não foi possível verificar a sincronização pendente:', err);
+      }
+      if (sincronizando || !sincronizacaoPendente) return;
+      sincronizando = true;
+
+      try {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (!ativo) return;
+
+        const sessaoLocal = await carregarSessaoAtiva();
+        if (!sessaoLocal) {
+          throw new Error('Não há uma sessão local disponível para sincronizar.');
+        }
+
+        if (await sincronizarSessaoCompartilhada(sessaoLocal)) {
+          showToast('Conexão restabelecida e sessão sincronizada.');
+        }
+      } catch (err) {
+        console.error('Falha ao retomar a sincronização após a reconexão:', err);
+        showToast('A conexão voltou, mas a sincronização ainda não foi concluída. Os dados locais estão preservados.');
+      } finally {
+        sincronizando = false;
+      }
+    };
+
+    window.addEventListener('offline', aoPerderConexao);
+    window.addEventListener('online', aoVoltarConexao);
+    return () => {
+      ativo = false;
+      window.removeEventListener('offline', aoPerderConexao);
+      window.removeEventListener('online', aoVoltarConexao);
+    };
+  }, [showToast, sincronizarSessaoCompartilhada]);
 
   // ========================================================
   // MOTOR 1: CARGA DE EXECUÇÕES (PASSADO / PRODUÇÃO)
@@ -472,6 +639,8 @@ export default function App() {
             cortesSupressoes: number;
             cortes: number;
             supressoes: number;
+            restabes: number;
+            religacoes: number;
             negociacoesPOS: number;
             cortesViraramPOS: number;
             reposicoesPiso: number;
@@ -494,6 +663,8 @@ export default function App() {
             cortesSupressoes: 0,
             cortes: 0,
             supressoes: 0,
+            restabes: 0,
+            religacoes: 0,
             negociacoesPOS: 0,
             cortesViraramPOS: 0,
             reposicoesPiso: 0,
@@ -520,6 +691,8 @@ export default function App() {
         let totalCortesSupressoes = 0;
         let totalCortes = 0;
         let totalSupressoes = 0;
+        let totalRestabes = 0;
+        let totalReligacoes = 0;
         let totalNegociacoesPOS = 0;
         let totalCortesViraramPOS = 0;
         let totalReposicoesPiso = 0;
@@ -528,6 +701,9 @@ export default function App() {
         let valorFaturadoTotal = 0;
 
         for (let i = 0; i < rows.length; i++) {
+          if (i > 0 && i % 500 === 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          }
           const row = rows[i];
           const resultadoRaw = String(getValFromRow(row, ['Resultado', 'Ocorrência', 'Status', 'Desc_Resultado', 'OCORRENCIA', 'RESULTADO']) || '').trim();
           if (!resultadoRaw) continue;
@@ -572,19 +748,21 @@ export default function App() {
           }
 
           const checkFimDoDia = isFimDoDiaOuBaixaInterna(resultadoRaw);
-          const checkCorteEfetivo = !checkFimDoDia && isCorteEfetivo(resultadoRaw);
-          const checkSupressaoEfetiva = !checkFimDoDia && isSupressaoEfetiva(resultadoRaw);
           const checkNegociacaoPOS = !checkFimDoDia && isNegociacaoPOS(resultadoRaw, descServicoRaw);
           const checkCorteVirouPOS = checkNegociacaoPOS && isCorteOuSupressao(descServicoRaw);
           const checkReposicaoPiso = !checkFimDoDia && isReposicaoPiso(resultadoRaw, descServicoRaw);
           const checkFaturaPaga = !checkFimDoDia && isFaturaPagaApresentada(resultadoRaw);
-          const checkCorteGeral = checkCorteEfetivo || checkSupressaoEfetiva || (!checkNegociacaoPOS && isCorteOuSupressao(resultadoRaw));
-          const checkInfrutifero = !checkFimDoDia && !checkFaturaPaga && isInfrutifero(resultadoRaw);
+          const checkInfrutifero = !checkFimDoDia && !checkFaturaPaga && isInfrutifero(resultadoRaw, descServicoRaw);
+          const checkCorteEfetivo = !checkFimDoDia && !checkInfrutifero && !checkNegociacaoPOS && isCorteEfetivo(resultadoRaw);
+          const checkSupressaoEfetiva = !checkFimDoDia && !checkInfrutifero && !checkNegociacaoPOS && isSupressaoEfetiva(resultadoRaw);
+          const checkRestabelecimento = !checkFimDoDia && !checkInfrutifero && isRestabelecimentoEfetivo(resultadoRaw, descServicoRaw);
+          const checkReligacao = !checkFimDoDia && !checkInfrutifero && isReligacaoEfetiva(resultadoRaw, descServicoRaw);
+          const checkCorteGeral = !checkInfrutifero && (checkCorteEfetivo || checkSupressaoEfetiva || (!checkNegociacaoPOS && isCorteOuSupressao(resultadoRaw)));
 
-          let valor = !checkFimDoDia ? calcularValorServico(resultadoRaw) : 0;
-          if (valor === 0 && checkReposicaoPiso) valor = 32.02;
-          if (valor === 0 && checkNegociacaoPOS) valor = 44.28;
-          const motivoCat = checkInfrutifero ? categorizarMotivoInfrutifero(resultadoRaw) : '';
+          let valor = !checkFimDoDia ? calcularValorServico(resultadoRaw, descServicoRaw) : 0;
+          if (valor === 0 && checkReposicaoPiso && !checkInfrutifero) valor = 32.02;
+          if (valor === 0 && checkNegociacaoPOS && !checkInfrutifero) valor = 44.28;
+          const motivoCat = checkInfrutifero ? categorizarMotivoInfrutifero(resultadoRaw, descServicoRaw) : '';
 
           if (checkFimDoDia) {
             // "Fim do Dia" é baixa interna e NÃO conta como visita ao imóvel
@@ -604,6 +782,8 @@ export default function App() {
             if (checkCorteGeral) totalCortesSupressoes++;
             if (checkNegociacaoPOS) totalNegociacoesPOS++;
             if (checkCorteVirouPOS) totalCortesViraramPOS++;
+            if (checkRestabelecimento) totalRestabes++;
+            if (checkReligacao) totalReligacoes++;
             if (checkReposicaoPiso) {
               totalReposicoesPiso++;
               faturadoReposicoesPiso += (valor || 32.02);
@@ -616,7 +796,7 @@ export default function App() {
                 municipio: municipioRaw || 'São Paulo',
                 bairro: bairroRaw || '-',
                 endereco: enderecoRaw,
-                frente: inferirFrente(descServicoRaw, municipioRaw),
+                frente: inferirFrente(descServicoRaw, municipioRaw, bairroRaw),
                 valor: valor || 32.02,
                 reincidente: false
               });
@@ -719,6 +899,8 @@ export default function App() {
                 cortesSupressoes: 0,
                 cortes: 0,
                 supressoes: 0,
+                restabes: 0,
+                religacoes: 0,
                 negociacoesPOS: 0,
                 cortesViraramPOS: 0,
                 reposicoesPiso: 0,
@@ -744,6 +926,8 @@ export default function App() {
               if (checkNegociacaoPOS) opItem.negociacoesPOS += 1;
               if (checkCorteVirouPOS) opItem.cortesViraramPOS += 1;
               if (checkReposicaoPiso) opItem.reposicoesPiso += 1;
+              if (checkRestabelecimento) opItem.restabes += 1;
+              if (checkReligacao) opItem.religacoes += 1;
             }
 
             // Tracking Geográfico (Bairros e Regiões)
@@ -768,6 +952,8 @@ export default function App() {
                 cortesSupressoes: 0,
                 cortes: 0,
                 supressoes: 0,
+                restabes: 0,
+                religacoes: 0,
                 negociacoesPOS: 0,
                 reposicoesPiso: 0,
                 faturasPagas: 0,
@@ -793,6 +979,8 @@ export default function App() {
               if (checkSupressaoEfetiva) diaItem.supressoes = (diaItem.supressoes || 0) + 1;
               if (checkNegociacaoPOS) diaItem.negociacoesPOS = (diaItem.negociacoesPOS || 0) + 1;
               if (checkReposicaoPiso) diaItem.reposicoesPiso = (diaItem.reposicoesPiso || 0) + 1;
+              if (checkRestabelecimento) diaItem.restabes = (diaItem.restabes || 0) + 1;
+              if (checkReligacao) diaItem.religacoes = (diaItem.religacoes || 0) + 1;
             }
             const reaisDia = diaItem.positivas + diaItem.infrutiferas;
             diaItem.percSucesso = reaisDia > 0 ? (diaItem.positivas / reaisDia) * 100 : 0;
@@ -921,6 +1109,8 @@ export default function App() {
             cortesSupressoes: dados.cortesSupressoes,
             cortes: dados.cortes,
             supressoes: dados.supressoes,
+            restabes: dados.restabes || 0,
+            religacoes: dados.religacoes || 0,
             negociacoesPOS: dados.negociacoesPOS,
             cortesViraramPOS: dados.cortesViraramPOS,
             reposicoesPiso: dados.reposicoesPiso,
@@ -996,6 +1186,8 @@ export default function App() {
           totalCortesSupressoes,
           totalCortes,
           totalSupressoes,
+          totalRestabes,
+          totalReligacoes: 0,
           totalCortesViraramPOS,
           totalNegociacoesPOS,
           totalReposicoesPiso,
@@ -1004,6 +1196,151 @@ export default function App() {
           valorFaturadoTotal
         };
         setExecucoesBrutasResumo(resumoAtualizado);
+
+        // =========================================================================
+        // MOTOR ANTI-RETRABALHO E NOVA CONDIÇÃO DOS PDES NAS EXECUÇÕES
+        // Mapeia todas as ordens que geraram retrabalho ou foram visitadas múltiplas vezes,
+        // e define com precisão cirúrgica a NOVA CONDIÇÃO DE CADA PDE após a execução.
+        // =========================================================================
+        const retrabalhosMap = new Map<string, RetrabalhoItem>();
+
+        // 1. Se já existiam retrabalhos na base (ex: da Carteira), atualiza com a execução
+        if (retrabalho.length > 0) {
+          retrabalho.forEach((r) => {
+            const hist = localPdeMap.get(r.pde);
+            if (hist) {
+              const ultVisita = hist.historicoDetalhado?.[hist.historicoDetalhado.length - 1];
+              const cond = ultVisita ? (
+                isCorteEfetivo(ultVisita.resultado) ? `✅ Cortado Sabesp (${ultVisita.data})` :
+                isSupressaoEfetiva(ultVisita.resultado) ? `✅ Suprimido Sabesp (${ultVisita.data})` :
+                isRestabelecimentoOuReligacao(ultVisita.resultado) ? `✅ Restabelecido/Religado (${ultVisita.data})` :
+                isNegociacaoPOS(ultVisita.resultado) ? `✅ Negociado via POS (${ultVisita.data})` :
+                isFaturaPagaApresentada(ultVisita.resultado) ? `✅ Fatura Paga Apresentada (${ultVisita.data})` :
+                isReposicaoPiso(ultVisita.resultado) ? `✅ Piso Reposto (${ultVisita.data})` :
+                isInfrutifero(ultVisita.resultado) ? `⚠️ Permanece Infrutífero: ${categorizarMotivoInfrutifero(ultVisita.resultado) || ultVisita.resultado}` :
+                `Executado: ${ultVisita.resultado}`
+              ) : 'Pendente de Execução';
+
+              retrabalhosMap.set(r.pde, {
+                ...r,
+                novaCondicao: cond,
+                visitasAnteriores: hist.totalVisitas,
+                ultimaData: hist.data || r.ultimaData,
+                statusOS: 'EXECUTADA',
+                operadorAnterior: hist.ultimoOperador || r.operadorAnterior
+              });
+            } else {
+              retrabalhosMap.set(r.pde, r);
+            }
+          });
+        }
+
+        // 2. Extrai retrabalhos diretamente da planilha de execuções (mesmo sem pendências prévias!)
+        for (let i = 0; i < rows.length; i++) {
+          if (i > 0 && i % 500 === 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          }
+          const row = rows[i];
+          const pdeRaw = getValFromRow(row, [
+            'PDE', 'Imóvel', 'Ligação', 'Cod_PDE', 'Instalação', 'NUM_LIGACAO', 'LIGACAO', 'IMOVEL', 'INSTALACAO', 'CONTRATO', 'Pde', 'pde', 'Imovel', 'Ligacao', 'Instalacao', 'No Ligacao', 'Nº Ligação'
+          ]);
+          const pdeLimpo = cleanPDE(pdeRaw);
+          if (!pdeLimpo) continue;
+
+          const hist = localPdeMap.get(pdeLimpo);
+          if (!hist) continue;
+
+          const osNum = String(getValFromRow(row, ['Número OS', 'OS', 'ID', 'Ordem', 'NUM_OS']) || `OS-${pdeLimpo}`).trim();
+          const descServicoRaw = String(getValFromRow(row, ['Descrição TSS', 'Serviço', 'TSS', 'Descrição', 'Servico', 'DESCRICAO_TSS']) || '').trim();
+          const resultadoRaw = String(getValFromRow(row, ['Resultado', 'Ocorrência', 'Status', 'Desc_Resultado', 'OCORRENCIA', 'RESULTADO']) || '').trim();
+          const municipioRaw = String(getValFromRow(row, ['Município', 'Cidade', 'Regional', 'Localidade', 'MUNICIPIO']) || 'São Paulo').trim();
+          const bairroRaw = String(getValFromRow(row, ['Bairro', 'Subprefeitura', 'Distrito', 'BAIRRO']) || '').trim();
+          const operadorRaw = String(getValFromRow(row, ['Equipe', 'Operador', 'Nome', 'Funcionario', 'Executor', 'EQUIPE', 'OPERADOR']) || '').trim();
+          const dtExecRaw = getValFromRow(row, ['Data', 'Data de Execução', 'Data Fim Execução', 'Data Exec', 'Competência', 'DATA']);
+          const dataExec = parseExcelDate(dtExecRaw);
+          const dataFormatada = formatDataAbrev(dataExec);
+
+          const checkCorte = isCorteEfetivo(resultadoRaw);
+          const checkSupr = isSupressaoEfetiva(resultadoRaw);
+          const checkRestabRelig = isRestabelecimentoOuReligacao(resultadoRaw, descServicoRaw);
+          const checkPOS = isNegociacaoPOS(resultadoRaw, descServicoRaw);
+          const checkFatPaga = isFaturaPagaApresentada(resultadoRaw);
+          const checkPiso = isReposicaoPiso(resultadoRaw, descServicoRaw);
+          const checkInf = isInfrutifero(resultadoRaw, descServicoRaw);
+          const eFimDoDia = isFimDoDiaOuBaixaInterna(resultadoRaw);
+
+          if (eFimDoDia) continue;
+
+          const totalVisitas = hist.totalVisitas || 1;
+          const falhasCount = hist.falhasCount || (checkInf ? 1 : 0);
+          const eRetrabalho = totalVisitas >= 2 || falhasCount >= 1 || isPDEViciado(hist);
+
+          if (eRetrabalho) {
+            let condicaoStr = 'Pendente';
+            let statusExec: 'EXECUTADO' | 'PENDENTE' | 'INFRUTIFERO_REINCIDENTE' | 'NEGOCIADO_POS' | 'CORTADO' | 'SUPRIMIDO' | 'RESTABELECIDO' = 'EXECUTADO';
+
+            if (checkCorte) {
+              condicaoStr = `✅ Cortado Sabesp por ${operadorRaw || 'Equipe'} (${dataFormatada})`;
+              statusExec = 'CORTADO';
+            } else if (checkSupr) {
+              condicaoStr = `✅ Suprimido Sabesp por ${operadorRaw || 'Equipe'} (${dataFormatada})`;
+              statusExec = 'SUPRIMIDO';
+            } else if (checkRestabRelig) {
+              condicaoStr = `✅ Restabelecido / Religado por ${operadorRaw || 'Equipe'} (${dataFormatada})`;
+              statusExec = 'RESTABELECIDO';
+            } else if (checkPOS) {
+              condicaoStr = `✅ Quitado via Maquininha POS (R$ 44,28) por ${operadorRaw || 'Equipe'}`;
+              statusExec = 'NEGOCIADO_POS';
+            } else if (checkFatPaga) {
+              condicaoStr = `✅ Fatura Paga Apresentada no Ato (${dataFormatada})`;
+              statusExec = 'EXECUTADO';
+            } else if (checkPiso) {
+              condicaoStr = `✅ Reposição de Piso Realizada (${dataFormatada})`;
+              statusExec = 'EXECUTADO';
+            } else if (checkInf) {
+              const mot = categorizarMotivoInfrutifero(resultadoRaw, descServicoRaw) || resultadoRaw;
+              condicaoStr = `⚠️ Permanece Infrutífero: ${mot} (${dataFormatada})`;
+              statusExec = 'INFRUTIFERO_REINCIDENTE';
+            }
+
+            const tipoRetrabalho = isPDEViciado(hist) || totalVisitas >= 3
+              ? 'PDE_VICIADO'
+              : falhasCount > 0
+              ? 'INFRUTIFERO_ANTERIOR'
+              : 'MULTIVISITAS';
+
+            const itemExist = retrabalhosMap.get(pdeLimpo);
+            if (!itemExist || statusExec !== 'INFRUTIFERO_REINCIDENTE') {
+              retrabalhosMap.set(pdeLimpo, {
+                id: `ret-exec-${osNum}-${pdeLimpo}`,
+                os: osNum,
+                pde: pdeLimpo,
+                pdeFormatado: pdeLimpo,
+                descricao: descServicoRaw || 'Serviço de Cobrança',
+                frente: inferirFrente(descServicoRaw, municipioRaw, bairroRaw),
+                municipio: municipioRaw || 'São Paulo',
+                bairro: bairroRaw || '-',
+                equipeAtual: operadorRaw || '-',
+                operadorAlocado: operadorRaw,
+                statusOS: 'EXECUTADA',
+                visitasAnteriores: totalVisitas,
+                ultimaData: dataFormatada,
+                motivoFalhaAnterior: resultadoRaw,
+                operadorAnterior: operadorRaw || hist.ultimoOperador || 'Equipe',
+                tipoRetrabalho,
+                isCobranca: true,
+                novaCondicao: condicaoStr,
+                statusExecucao: statusExec,
+                dataUltimaExecucao: dataFormatada,
+                operadorUltimaExecucao: operadorRaw,
+                historicoVisitas: hist.historicoDetalhado || []
+              });
+            }
+          }
+        }
+
+        const listaRetrabalhosExec = Array.from(retrabalhosMap.values());
+        setRetrabalho(listaRetrabalhosExec);
 
         // REGISTRAR CARGA NO HISTÓRICO DE AUDITORIA
         const minData = listaDatasOrdenadas[0] || 'Hoje';
@@ -1042,7 +1379,7 @@ export default function App() {
           evolucaoDiaria: evolucaoArray,
           reposicoesPiso: reposicoesPisoArray,
           urgencias,
-          retrabalho,
+          retrabalho: listaRetrabalhosExec,
           carteiraLivre,
           totalCarteiraImportada,
           duplicidadesCarteiraCount,
@@ -1052,13 +1389,7 @@ export default function App() {
         };
         await salvarSessaoAtiva(sessaoSalvar);
 
-        try {
-          fetch('/api/shared_state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sessaoSalvar)
-          }).catch(() => {});
-        } catch {}
+        void sincronizarSessaoCompartilhada(sessaoSalvar);
 
         showToast(
           `✅ Execuções Processadas! ${rows.length.toLocaleString('pt-BR')} linhas (${totalCortesSupressoes} cortes/supressões, ${totalNegociacoesPOS} POS, ${totalReposicoesPiso} reposições).`
@@ -1071,7 +1402,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [pdeHistoricoMap, equipe, showToast]
+    [pdeHistoricoMap, equipe, showToast, sincronizarSessaoCompartilhada]
   );
 
   // ========================================================
@@ -1079,6 +1410,7 @@ export default function App() {
   // ========================================================
   const processarLinhasPendencias = useCallback(
     async (rows: Record<string, unknown>[]) => {
+      const now = new Date();
       setIsLoading(true);
       setLoadingMsg({
         title: '🔍 MOTOR 2: Triando Carteira de Pendências...',
@@ -1195,6 +1527,9 @@ export default function App() {
         let duplicidadesDetectadas = 0;
 
         for (let i = 0; i < rows.length; i++) {
+          if (i > 0 && i % 500 === 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          }
           const row = rows[i];
           const pdeRaw = getValFromRow(row, [
             'PDE',
@@ -1315,7 +1650,7 @@ export default function App() {
           const isCobrancaServico = isServicoCobranca(descServico);
 
           if (slaCalc.isUrgencia) {
-            const diff = formatTempoRestante(slaCalc.vencReal, currentTime);
+            const diff = formatTempoRestante(slaCalc.vencReal, now);
 
             listaUrgencias.push({
               id: `${osNum}-${pdeLimpo}-${i}`,
@@ -1341,9 +1676,9 @@ export default function App() {
             });
           } else {
             // Carteira Livre: inclui cálculo de vencimento para serviços de cobrança
-            const isVencidaLivre = slaCalc.vencReal.getTime() < currentTime.getTime();
+            const isVencidaLivre = slaCalc.vencReal.getTime() < now.getTime();
             const diasVencidaLivre = isVencidaLivre
-              ? Math.max(1, Math.floor((currentTime.getTime() - slaCalc.vencReal.getTime()) / (1000 * 60 * 60 * 24)))
+              ? Math.max(1, Math.floor((now.getTime() - slaCalc.vencReal.getTime()) / (1000 * 60 * 60 * 24)))
               : 0;
             let tipoCobranca: 'CORTE' | 'SUPRESSAO' | 'VISTORIA' | 'OUTRO' = 'OUTRO';
             const normDesc = normalize(descServico);
@@ -1424,13 +1759,7 @@ export default function App() {
         };
         await salvarSessaoAtiva(sessaoParaSalvarPend);
 
-        try {
-          fetch('/api/shared_state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sessaoParaSalvarPend)
-          }).catch(() => {});
-        } catch {}
+        void sincronizarSessaoCompartilhada(sessaoParaSalvarPend);
 
         showToast(
           `🎯 Carteira Triada & Salva no Banco! ${listaUrgencias.length} Urgências, ${listaRetrabalho.length} Bloqueadas por Retrabalho, ${listaLivre.length} Livres.`
@@ -1443,67 +1772,59 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [pdeHistoricoMap, currentTime, showToast, usuarioLogado, totalExecucoesProcessadas, execucoesBrutasResumo, producaoOperadores, infrutiferasEstatisticas, evolucaoDiaria, datasDisponiveis]
+    [pdeHistoricoMap, showToast, usuarioLogado, totalExecucoesProcessadas, execucoesBrutasResumo, producaoOperadores, infrutiferasEstatisticas, evolucaoDiaria, datasDisponiveis, sincronizarSessaoCompartilhada]
   );
 
   // File Handlers
-  const handleFilePendencias = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFilePendencias = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheetName = workbook.SheetNames.find((s) => normalize(s).includes('OS') || normalize(s).includes('PEND')) || workbook.SheetNames[0];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[sheetName], { defval: '' });
-        
-        if (rows.length > 0) {
-          const colunas = Object.keys(rows[0]);
-          const validacao = validarArquivoPendencia(colunas);
-          if (!validacao.valido) {
-            const prosseguir = confirm(
-              `⚠️ ATENÇÃO: ARQUIVO INCOMPATÍVEL DETECTADO!\n\n${validacao.motivo}\n\nDeseja forçar o processamento mesmo assim?`
-            );
-            if (!prosseguir) return;
-          }
-        }
-        processarLinhasPendencias(rows);
-      } catch (err: unknown) {
-        const error = err as Error;
-        alert('Erro ao ler planilha de pendências: ' + error.message);
-      }
-    };
-    reader.readAsArrayBuffer(file);
     e.target.value = '';
+
+    try {
+      const { rows } = await readExcelInWorker(file, 'pendencias');
+      if (rows.length > 0) {
+        const colunas = Object.keys(rows[0]);
+        const validacao = validarArquivoPendencia(colunas);
+        if (!validacao.valido) {
+          const prosseguir = confirm(
+            `⚠️ ATENÇÃO: ARQUIVO INCOMPATÍVEL DETECTADO!\n\n${validacao.motivo}\n\nDeseja forçar o processamento mesmo assim?`
+          );
+          if (!prosseguir) return;
+        }
+      }
+      processarLinhasPendencias(rows);
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error('Erro ao ler planilha de pendências no Worker:', error);
+      alert('Erro ao ler planilha de pendências: ' + error.message);
+    }
   };
 
-  const handleFileExecucoes = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileExecucoes = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheetName = workbook.SheetNames.find((s) => normalize(s).includes('EXEC') || normalize(s).includes('PROD')) || workbook.SheetNames[0];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[sheetName], { defval: '' });
-        
-        if (rows.length > 0) {
-          const colunas = Object.keys(rows[0]);
-          const validacao = validarArquivoExecucao(colunas);
-          if (!validacao.valido) {
-            const prosseguir = confirm(
-              `⚠️ ATENÇÃO: ARQUIVO INCOMPATÍVEL DETECTADO!\n\n${validacao.motivo}\n\nDeseja forçar o processamento mesmo assim?`
-            );
-            if (!prosseguir) return;
-          }
+    try {
+      const { rows } = await readExcelInWorker(file, 'execucoes');
+      if (rows.length > 0) {
+        const colunas = Object.keys(rows[0]);
+        const validacao = validarArquivoExecucao(colunas);
+        if (!validacao.valido) {
+          const prosseguir = confirm(
+            `⚠️ ATENÇÃO: ARQUIVO INCOMPATÍVEL DETECTADO!\n\n${validacao.motivo}\n\nDeseja forçar o processamento mesmo assim?`
+          );
+          if (!prosseguir) return;
+        }
 
           // Identifica operadores na planilha para cadastro prévio
           const nomesPlanilha = new Map<string, string>();
-          rows.forEach((r) => {
+          for (let i = 0; i < rows.length; i++) {
+            if (i > 0 && i % 500 === 0) {
+              await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+            }
+            const r = rows[i];
             const opRaw = String(getValFromRow(r, ['Equipe', 'Operador', 'Nome', 'Funcionario', 'Executor', 'EQUIPE', 'OPERADOR']) || '').trim();
             if (opRaw) {
               const norm = normalize(opRaw);
@@ -1511,7 +1832,7 @@ export default function App() {
                 nomesPlanilha.set(norm, opRaw);
               }
             }
-          });
+          }
 
           const naoCadastrados: {
             nome: string;
@@ -1561,18 +1882,26 @@ export default function App() {
           let rowsParaProcessar = rows;
           if (modoCarga === 'INCREMENTAL' && linhasExecucoesBrutas.length > 0) {
             const chavesExistentes = new Set<string>();
-            linhasExecucoesBrutas.forEach((r) => {
+            for (let i = 0; i < linhasExecucoesBrutas.length; i++) {
+              if (i > 0 && i % 500 === 0) {
+                await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+              }
+              const r = linhasExecucoesBrutas[i];
               const os = String(getValFromRow(r, ['Número OS', 'OS', 'ID', 'Ordem', 'NUM_OS']) || '').trim();
               const dt = String(getValFromRow(r, ['Data', 'Data de Execução', 'Data Fim Execução', 'Data Exec', 'Competência', 'DATA']) || '').trim();
               const res = String(getValFromRow(r, ['Resultado', 'Ocorrência', 'Status', 'Desc_Resultado', 'OCORRENCIA', 'RESULTADO']) || '').trim();
               chavesExistentes.add(`${os}_${dt}_${res}`);
-            });
+            }
 
             let novasLinhasAdicionadas = 0;
             let duplicadasIgnoradas = 0;
             const linhasNovasUnicas: Record<string, unknown>[] = [];
 
-            rows.forEach((r) => {
+            for (let i = 0; i < rows.length; i++) {
+              if (i > 0 && i % 500 === 0) {
+                await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+              }
+              const r = rows[i];
               const os = String(getValFromRow(r, ['Número OS', 'OS', 'ID', 'Ordem', 'NUM_OS']) || '').trim();
               const dt = String(getValFromRow(r, ['Data', 'Data de Execução', 'Data Fim Execução', 'Data Exec', 'Competência', 'DATA']) || '').trim();
               const res = String(getValFromRow(r, ['Resultado', 'Ocorrência', 'Status', 'Desc_Resultado', 'OCORRENCIA', 'RESULTADO']) || '').trim();
@@ -1584,7 +1913,7 @@ export default function App() {
                 linhasNovasUnicas.push(r);
                 novasLinhasAdicionadas++;
               }
-            });
+            }
 
             rowsParaProcessar = [...linhasExecucoesBrutas, ...linhasNovasUnicas];
             setLinhasExecucoesBrutas(rowsParaProcessar);
@@ -1593,16 +1922,13 @@ export default function App() {
             setLinhasExecucoesBrutas(rows);
           }
 
-          processarLinhasExecucoes(rowsParaProcessar, novaEquipe);
-          return;
-        }
-      } catch (err: unknown) {
-        const error = err as Error;
-        alert('Erro ao ler planilha de execuções: ' + error.message);
+        processarLinhasExecucoes(rowsParaProcessar, novaEquipe);
       }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error('Erro ao ler planilha de execuções no Worker:', error);
+      alert('Erro ao ler planilha de execuções: ' + error.message);
+    }
   };
 
   // Salvar novos operadores detectados na planilha de execuções e continuar
@@ -1870,8 +2196,15 @@ A operação diligenciou 100% dos despachos disponibilizados. O não atingimento
       Veículo: op.veiculo,
       Frente: op.frente,
       'Total OS': op.totalOS,
+      'Cortes / Supr.': op.cortesSupressoes,
+      'Cortes Só': op.cortes || 0,
+      'Supressões': op.supressoes || 0,
+      'Restabes / Religações': (op.restabes || 0) + (op.religacoes || 0),
+      'Negociações POS': op.negociacoesPOS || 0,
+      'Reposições Piso': op.reposicoesPiso || 0,
       Positivas: op.positivas,
       Infrutíferas: op.infrutiferas,
+      'Fim do Dia (Expurgado)': op.fimDoDiaCount,
       '% Sucesso': `${op.percSucesso.toFixed(1)}%`,
       'Meta (R$)': op.meta,
       'Faturamento (R$)': op.faturado,
@@ -1912,20 +2245,17 @@ A operação diligenciou 100% dos despachos disponibilizados. O não atingimento
       };
 
       await salvarSessaoAtiva(sessaoAtual);
-      try {
-        await fetch('/api/shared_state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sessaoAtual)
-        });
-      } catch {}
+      const sincronizada = await sincronizarSessaoCompartilhada(sessaoAtual);
 
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(window.location.href);
       }
-      showToast('🔗 Link sincronizado e copiado! Quem acessar o link já verá tudo o que foi puxado.');
-    } catch {
-      showToast('🔗 Painel sincronizado no servidor com sucesso!');
+      showToast(sincronizada
+        ? '🔗 Link sincronizado e copiado! Quem acessar o link já verá tudo o que foi puxado.'
+        : '🔗 Link copiado. A sessão está salva localmente e será sincronizada quando a conexão voltar.');
+    } catch (err) {
+      console.error('Não foi possível copiar o link do painel:', err);
+      showToast('A sessão está salva localmente, mas não foi possível copiar o link.');
     }
   };
 
@@ -2051,6 +2381,16 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
       return true;
     });
   }, [urgencias, frenteFiltro, filtroStatusUrgencia, filtroTipoPendencias, filtroStatusOSCarteira, searchTermUrgencias]);
+  const {
+    currentPage: urgenciasPage,
+    totalPages: urgenciasTotalPages,
+    pageItems: urgenciasPageItems,
+    setCurrentPage: setUrgenciasPage
+  } = usePagination(
+    urgenciasFiltradas,
+    PAGE_SIZE,
+    `${frenteFiltro}|${filtroStatusUrgencia}|${filtroTipoPendencias}|${filtroStatusOSCarteira}|${searchTermUrgencias}`
+  );
 
   // Filtragem de Retrabalho (ESTRITAMENTE COBRANÇA: Corte, Supressão, POS, Restabelecimento, Religação, Reposição)
   const retrabalhoFiltrado = useMemo(() => {
@@ -2071,6 +2411,14 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
       if (filtroRetrabalhoTipo === 'DUPLICADAS' && item.tipoRetrabalho !== 'DUPLICIDADE_CARTEIRA' && !item.duplicadaNaCarteira) {
         return false;
       }
+      if (filtroRetrabalhoTipo === 'RESOLVIDOS') {
+        const isResolvido = item.statusOS === 'EXECUTADA' && item.statusExecucao !== 'INFRUTIFERO_REINCIDENTE' && item.novaCondicao && !item.novaCondicao.includes('Infrutífero');
+        if (!isResolvido) return false;
+      }
+      if (filtroRetrabalhoTipo === 'VICIADOS') {
+        const isViciado = item.tipoRetrabalho === 'PDE_VICIADO' || item.visitasAnteriores >= 3;
+        if (!isViciado) return false;
+      }
       if (searchTermRetrabalho.trim()) {
         const s = normalize(searchTermRetrabalho);
         return (
@@ -2084,6 +2432,12 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
       return true;
     });
   }, [retrabalho, frenteFiltro, filtroRetrabalhoTipo, searchTermRetrabalho]);
+  const {
+    currentPage: retrabalhoPage,
+    totalPages: retrabalhoTotalPages,
+    pageItems: retrabalhoPageItems,
+    setCurrentPage: setRetrabalhoPage
+  } = usePagination(retrabalhoFiltrado, PAGE_SIZE, `${frenteFiltro}|${filtroRetrabalhoTipo}|${searchTermRetrabalho}`);
 
   // Filtragem de Visitas / Retrabalho de OUTRAS FRENTES (Hidrometria, Irregularidades, Ramal, Esgoto, etc.)
   const retrabalhoOutrasFrentesFiltrado = useMemo(() => {
@@ -2218,6 +2572,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
             cortesSupressoes: diaStats.cortesSupressoes,
             cortes: diaStats.cortes || 0,
             supressoes: diaStats.supressoes || 0,
+            restabes: diaStats.restabes || 0,
+            religacoes: diaStats.religacoes || 0,
             negociacoesPOS: diaStats.negociacoesPOS || 0,
             reposicoesPiso: diaStats.reposicoesPiso || 0,
             faturasPagas: diaStats.faturasPagas || 0,
@@ -2249,6 +2605,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
           let totCortes = 0;
           let totCortesIndiv = 0;
           let totSupressoesIndiv = 0;
+          let totRestabes = 0;
+          let totReligacoes = 0;
           let totNegociacoes = 0;
           let totPiso = 0;
           let totFaturasPagas = 0;
@@ -2264,6 +2622,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
               totCortes += item.cortesSupressoes;
               totCortesIndiv += (item.cortes || 0);
               totSupressoesIndiv += (item.supressoes || 0);
+              totRestabes += (item.restabes || 0);
+              totReligacoes += (item.religacoes || 0);
               totNegociacoes += (item.negociacoesPOS || 0);
               totPiso += (item.reposicoesPiso || 0);
               totFaturasPagas += (item.faturasPagas || 0);
@@ -2291,6 +2651,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
             cortesSupressoes: totCortes,
             cortes: totCortesIndiv,
             supressoes: totSupressoesIndiv,
+            restabes: totRestabes,
+            religacoes: totReligacoes,
             negociacoesPOS: totNegociacoes,
             reposicoesPiso: totPiso,
             faturasPagas: totFaturasPagas,
@@ -2322,6 +2684,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
           let totCortes = 0;
           let totCortesIndiv = 0;
           let totSupressoesIndiv = 0;
+          let totRestabes = 0;
+          let totReligacoes = 0;
           let totNegociacoes = 0;
           let totPiso = 0;
           let totFaturasPagas = 0;
@@ -2337,6 +2701,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
               totCortes += item.cortesSupressoes;
               totCortesIndiv += (item.cortes || 0);
               totSupressoesIndiv += (item.supressoes || 0);
+              totRestabes += (item.restabes || 0);
+              totReligacoes += (item.religacoes || 0);
               totNegociacoes += (item.negociacoesPOS || 0);
               totPiso += (item.reposicoesPiso || 0);
               totFaturasPagas += (item.faturasPagas || 0);
@@ -2361,6 +2727,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
             cortesSupressoes: totCortes,
             cortes: totCortesIndiv,
             supressoes: totSupressoesIndiv,
+            restabes: totRestabes,
+            religacoes: totReligacoes,
             negociacoesPOS: totNegociacoes,
             reposicoesPiso: totPiso,
             faturasPagas: totFaturasPagas,
@@ -2375,6 +2743,191 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
           };
         }
 
+        // ----------------------------------------------------
+        // VISÃO 4: INTERVALO CUSTOM (QUALQUER PERÍODO / CICLO 1 A 30)
+        // ----------------------------------------------------
+        if (tipoAgregacao === 'CUSTOM') {
+          const [yI, mI, dI] = (intervaloCustom.dataInicio || '2026-09-01').split('-').map(Number);
+          const [yF, mF, dF] = (intervaloCustom.dataFim || '2026-09-30').split('-').map(Number);
+          const dtIni = new Date(yI, (mI || 1) - 1, dI || 1);
+          const dtFim = new Date(yF, (mF || 1) - 1, dF || 1);
+
+          const datasAlvo = datasDisponiveis.filter((dStr) => {
+            const [dia, mes, ano] = dStr.split('/').map(Number);
+            const dt = new Date(ano || 2026, (mes || 1) - 1, dia || 1);
+            return dt >= dtIni && dt <= dtFim;
+          });
+
+          let totOS = 0;
+          let totPos = 0;
+          let totCortes = 0;
+          let totCortesIndiv = 0;
+          let totSupressoesIndiv = 0;
+          let totRestabes = 0;
+          let totReligacoes = 0;
+          let totNegociacoes = 0;
+          let totPiso = 0;
+          let totFaturasPagas = 0;
+          let totInf = 0;
+          let totFim = 0;
+          let totFat = 0;
+
+          datasAlvo.forEach((d) => {
+            const item = op.historicoDiario?.[d];
+            if (item) {
+              totOS += item.totalOS;
+              totPos += item.positivas;
+              totCortes += item.cortesSupressoes;
+              totCortesIndiv += item.cortes || 0;
+              totSupressoesIndiv += item.supressoes || 0;
+              totRestabes += (item.restabes || 0);
+              totReligacoes += (item.religacoes || 0);
+              totNegociacoes += item.negociacoesPOS || 0;
+              totPiso += item.reposicoesPiso || 0;
+              totFaturasPagas += item.faturasPagas || 0;
+              totInf += item.infrutiferas;
+              totFim += item.fimDoDiaCount;
+              totFat += item.faturado;
+            }
+          });
+
+          const atendReais = totPos + totInf;
+          const percSuc = atendReais > 0 ? (totPos / atendReais) * 100 : 0;
+
+          const ehCiclo30 = datasAlvo.length >= 20 || (intervaloCustom.nomePreset?.includes('30') ?? false);
+          const metaPeriodo = ehCiclo30 ? op.meta : Math.round((op.meta / 22) * Math.max(1, datasAlvo.length));
+          const excessoPeriodo = Math.max(0, totFat - metaPeriodo);
+          const atingPeriodo = metaPeriodo > 0 ? (totFat / metaPeriodo) * 100 : 0;
+          const comissaoPeriodo = excessoPeriodo * (METAS_PADRAO.percComissaoPadrao / 100);
+
+          return {
+            ...op,
+            totalOS: totOS,
+            positivas: totPos,
+            cortesSupressoes: totCortes,
+            cortes: totCortesIndiv,
+            supressoes: totSupressoesIndiv,
+            restabes: totRestabes,
+            religacoes: totReligacoes,
+            negociacoesPOS: totNegociacoes,
+            reposicoesPiso: totPiso,
+            faturasPagas: totFaturasPagas,
+            infrutiferas: totInf,
+            fimDoDiaCount: totFim,
+            faturado: totFat,
+            percSucesso: percSuc,
+            meta: metaPeriodo,
+            atingimentoMeta: atingPeriodo,
+            excesso: excessoPeriodo,
+            comissao: comissaoPeriodo
+          };
+        }
+
+        // ----------------------------------------------------
+        // VISÃO 5: COMPARATIVO (01/07 vs 01/08 ou PERÍODO A vs B)
+        // ----------------------------------------------------
+        if (tipoAgregacao === 'COMPARATIVO') {
+          // Período A (Atual / Análise)
+          const [yIA, mIA, dIA] = (intervaloCustom.dataInicio || '2026-08-01').split('-').map(Number);
+          const [yFA, mFA, dFA] = (intervaloCustom.dataFim || '2026-08-31').split('-').map(Number);
+          const dtIniA = new Date(yIA, (mIA || 1) - 1, dIA || 1);
+          const dtFimA = new Date(yFA, (mFA || 1) - 1, dFA || 1);
+
+          // Período B (Base / Comparação)
+          const [yIB, mIB, dIB] = (intervaloCustom.dataInicioComp || '2026-07-01').split('-').map(Number);
+          const [yFB, mFB, dFB] = (intervaloCustom.dataFimComp || '2026-07-31').split('-').map(Number);
+          const dtIniB = new Date(yIB, (mIB || 1) - 1, dIB || 1);
+          const dtFimB = new Date(yFB, (mFB || 1) - 1, dFB || 1);
+
+          const datasAlvoA = datasDisponiveis.filter((dStr) => {
+            const [dia, mes, ano] = dStr.split('/').map(Number);
+            const dt = new Date(ano || 2026, (mes || 1) - 1, dia || 1);
+            return dt >= dtIniA && dt <= dtFimA;
+          });
+
+          const datasAlvoB = datasDisponiveis.filter((dStr) => {
+            const [dia, mes, ano] = dStr.split('/').map(Number);
+            const dt = new Date(ano || 2026, (mes || 1) - 1, dia || 1);
+            return dt >= dtIniB && dt <= dtFimB;
+          });
+
+          // Stats Período A
+          let totOSA = 0, totPosA = 0, totCortesA = 0, totCortesIndivA = 0, totSupressoesIndivA = 0;
+          let totRestabesA = 0, totReligacoesA = 0;
+          let totNegociacoesA = 0, totPisoA = 0, totFaturasPagasA = 0, totInfA = 0, totFimA = 0, totFatA = 0;
+
+          datasAlvoA.forEach((d) => {
+            const item = op.historicoDiario?.[d];
+            if (item) {
+              totOSA += item.totalOS;
+              totPosA += item.positivas;
+              totCortesA += item.cortesSupressoes;
+              totCortesIndivA += item.cortes || 0;
+              totSupressoesIndivA += item.supressoes || 0;
+              totRestabesA += item.restabes || 0;
+              totReligacoesA += item.religacoes || 0;
+              totNegociacoesA += item.negociacoesPOS || 0;
+              totPisoA += item.reposicoesPiso || 0;
+              totFaturasPagasA += item.faturasPagas || 0;
+              totInfA += item.infrutiferas;
+              totFimA += item.fimDoDiaCount;
+              totFatA += item.faturado;
+            }
+          });
+
+          // Stats Período B
+          let totPosB = 0, totCortesB = 0, totFatB = 0;
+          datasAlvoB.forEach((d) => {
+            const item = op.historicoDiario?.[d];
+            if (item) {
+              totPosB += item.positivas;
+              totCortesB += item.cortesSupressoes;
+              totFatB += item.faturado;
+            }
+          });
+
+          const atendReaisA = totPosA + totInfA;
+          const percSucA = atendReaisA > 0 ? (totPosA / atendReaisA) * 100 : 0;
+
+          const metaMensal = op.meta;
+          const excessoA = Math.max(0, totFatA - metaMensal);
+          const atingA = metaMensal > 0 ? (totFatA / metaMensal) * 100 : 0;
+          const comissaoA = excessoA * (METAS_PADRAO.percComissaoPadrao / 100);
+
+          const variacaoFat = totFatB > 0 ? ((totFatA - totFatB) / totFatB) * 100 : (totFatA > 0 ? 100 : 0);
+          const variacaoCortes = totCortesB > 0 ? ((totCortesA - totCortesB) / totCortesB) * 100 : (totCortesA > 0 ? 100 : 0);
+
+          return {
+            ...op,
+            totalOS: totOSA,
+            positivas: totPosA,
+            cortesSupressoes: totCortesA,
+            cortes: totCortesIndivA,
+            supressoes: totSupressoesIndivA,
+            restabes: totRestabesA,
+            religacoes: totReligacoesA,
+            negociacoesPOS: totNegociacoesA,
+            reposicoesPiso: totPisoA,
+            faturasPagas: totFaturasPagasA,
+            infrutiferas: totInfA,
+            fimDoDiaCount: totFimA,
+            faturado: totFatA,
+            percSucesso: percSucA,
+            meta: metaMensal,
+            atingimentoMeta: atingA,
+            excesso: excessoA,
+            comissao: comissaoA,
+            comparativo: {
+              faturadoAnterior: totFatB,
+              cortesAnterior: totCortesB,
+              positivasAnterior: totPosB,
+              variacaoFaturadoPerc: variacaoFat,
+              variacaoCortesPerc: variacaoCortes,
+              crescimento: totFatA >= totFatB
+            }
+          };
+        }
+
         return op;
       })
       .sort((a, b) => b.faturado - a.faturado);
@@ -2386,6 +2939,7 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
     dataFiltro,
     semanaFiltro,
     mesFiltro,
+    intervaloCustom,
     datasDisponiveis,
     semanasDisponiveis,
     mesesDisponiveis,
@@ -2393,6 +2947,199 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
     somenteEquipeOficial,
     equipe
   ]);
+
+  // Filtragem Final com Suporte a Filtros Estilo Excel e Chips Rápidos
+  const producaoFinal = useMemo(() => {
+    let list = [...producaoFiltrada];
+
+    // 1. Filtros Rápidos (Chips)
+    if (filtroRapidoChip === 'LESTE') {
+      list = list.filter((op) => op.frente.includes('Leste'));
+    } else if (filtroRapidoChip === 'ALTO') {
+      list = list.filter((op) => op.frente.includes('Alto'));
+    } else if (filtroRapidoChip === 'MOTOS') {
+      list = list.filter((op) => op.veiculo === 'Moto');
+    } else if (filtroRapidoChip === 'CARROS') {
+      list = list.filter((op) => op.veiculo === 'Carro');
+    } else if (filtroRapidoChip === 'META_BATIDA') {
+      list = list.filter((op) => op.atingimentoMeta >= 100);
+    } else if (filtroRapidoChip === 'NA_TRAVE') {
+      list = list.filter((op) => op.atingimentoMeta >= 80 && op.atingimentoMeta < 100);
+    } else if (filtroRapidoChip === 'ABAIXO_META') {
+      list = list.filter((op) => op.atingimentoMeta < 80);
+    } else if (filtroRapidoChip === 'MIGUE') {
+      list = list.filter((op) => op.diagnostico?.padraoSuspeitoMigue);
+    }
+
+    // 2. Filtros Colunares Estilo Excel
+    Object.entries(excelFiltros).forEach(([colId, filter]) => {
+      if (!filter) return;
+      if (filter.selected && filter.selected.length > 0) {
+        if (colId === 'operador') {
+          list = list.filter((op) => filter.selected.includes(op.nomeNormalizado));
+        } else if (colId === 'frente') {
+          list = list.filter((op) => filter.selected.includes(op.frente));
+        } else if (colId === 'veiculo') {
+          list = list.filter((op) => filter.selected.includes(op.veiculo));
+        } else if (colId === 'tipoEquipe') {
+          list = list.filter((op) => filter.selected.includes(op.tipoEquipe || 'PROPRIA'));
+        }
+      }
+
+      if (filter.min !== undefined && filter.min > 0) {
+        if (colId === 'faturado') list = list.filter((op) => op.faturado >= filter.min!);
+        if (colId === 'totalOS') list = list.filter((op) => op.totalOS >= filter.min!);
+        if (colId === 'percSucesso') list = list.filter((op) => op.percSucesso >= filter.min!);
+        if (colId === 'cortes') list = list.filter((op) => op.cortesSupressoes >= filter.min!);
+      }
+    });
+
+    // 3. Ordenação Colunar Estilo Excel
+    const activeSortEntry = Object.entries(excelFiltros).find(([_, f]) => f?.sort !== null);
+    if (activeSortEntry) {
+      const [colId, filter] = activeSortEntry;
+      const dir = filter.sort === 'asc' ? 1 : -1;
+      list.sort((a, b) => {
+        if (colId === 'operador') return a.nome.localeCompare(b.nome) * dir;
+        if (colId === 'frente') return a.frente.localeCompare(b.frente) * dir;
+        if (colId === 'veiculo') return a.veiculo.localeCompare(b.veiculo) * dir;
+        if (colId === 'totalOS') return (a.totalOS - b.totalOS) * dir;
+        if (colId === 'cortes') return (a.cortesSupressoes - b.cortesSupressoes) * dir;
+        if (colId === 'restabes') {
+          const rA = (a.restabes || 0) + (a.religacoes || 0);
+          const rB = (b.restabes || 0) + (b.religacoes || 0);
+          return (rA - rB) * dir;
+        }
+        if (colId === 'pos') return ((a.negociacoesPOS || 0) - (b.negociacoesPOS || 0)) * dir;
+        if (colId === 'sucesso') return (a.percSucesso - b.percSucesso) * dir;
+        if (colId === 'faturado') return (a.faturado - b.faturado) * dir;
+        if (colId === 'meta') return (a.meta - b.meta) * dir;
+        if (colId === 'atingimento') return (a.atingimentoMeta - b.atingimentoMeta) * dir;
+        return 0;
+      });
+    }
+
+    return list;
+  }, [producaoFiltrada, filtroRapidoChip, excelFiltros]);
+  const {
+    currentPage: producaoPage,
+    totalPages: producaoTotalPages,
+    pageItems: producaoPageItems,
+    setCurrentPage: setProducaoPage
+  } = usePagination(
+    producaoFinal,
+    PAGE_SIZE,
+    `${frenteFiltro}|${buscaOperadorProducao}|${tipoAgregacao}|${dataFiltro}|${semanaFiltro}|${mesFiltro}|${filtroRapidoChip}|${JSON.stringify(excelFiltros)}|${JSON.stringify(intervaloCustom)}|${operadoresExcluidos.join('|')}|${somenteEquipeOficial}`
+  );
+
+  const opcoesOperadoresExcel = useMemo(() => {
+    return Array.from(new Set(producaoFiltrada.map((op) => op.nomeNormalizado))).map((norm) => {
+      const op = producaoFiltrada.find((o) => o.nomeNormalizado === norm);
+      return { value: norm, label: op?.nome || norm };
+    });
+  }, [producaoFiltrada]);
+
+  const opcoesFrentesExcel = useMemo(() => {
+    return Array.from(new Set(producaoFiltrada.map((op) => op.frente))).map((f) => ({
+      value: f,
+      label: f
+    }));
+  }, [producaoFiltrada]);
+
+  const opcoesVeiculosExcel = useMemo(() => {
+    return Array.from(new Set(producaoFiltrada.map((op) => op.veiculo))).map((v) => ({
+      value: v,
+      label: v
+    }));
+  }, [producaoFiltrada]);
+
+  const opcoesTiposEquipeExcel = useMemo(() => {
+    return [
+      { value: 'PROPRIA', label: 'Equipe Própria' },
+      { value: 'APOIO_EXTERNO', label: 'Apoio Externo' }
+    ];
+  }, []);
+
+  // Métricas Consolidadas do Período Filtrado (Geral / Frentes)
+  const cortesAtuais = useMemo(() => {
+    return producaoFiltrada
+      .filter((op) =>
+        activeTab === 'cobranca_leste'
+          ? op.frente.includes('Leste')
+          : activeTab === 'cobranca_alto'
+          ? op.frente.includes('Alto')
+          : true
+      )
+      .reduce((acc, curr) => acc + curr.cortesSupressoes, 0);
+  }, [producaoFiltrada, activeTab]);
+
+  const restabesReligacoesAtuais = useMemo(() => {
+    return producaoFiltrada
+      .filter((op) =>
+        activeTab === 'cobranca_leste'
+          ? op.frente.includes('Leste')
+          : activeTab === 'cobranca_alto'
+          ? op.frente.includes('Alto')
+          : true
+      )
+      .reduce((acc, curr) => acc + (curr.restabesReligacoes ?? ((curr.restabes || 0) + (curr.religacoes || 0))), 0);
+  }, [producaoFiltrada, activeTab]);
+
+  const faturadoAtual = useMemo(() => {
+    return producaoFiltrada
+      .filter((op) =>
+        activeTab === 'cobranca_leste'
+          ? op.frente.includes('Leste')
+          : activeTab === 'cobranca_alto'
+          ? op.frente.includes('Alto')
+          : true
+      )
+      .reduce((acc, curr) => acc + curr.faturado, 0);
+  }, [producaoFiltrada, activeTab]);
+
+  const faturadoComparadoBase = useMemo(() => {
+    if (tipoAgregacao !== 'COMPARATIVO') return 0;
+    return producaoFiltrada
+      .filter((op) =>
+        activeTab === 'cobranca_leste'
+          ? op.frente.includes('Leste')
+          : activeTab === 'cobranca_alto'
+          ? op.frente.includes('Alto')
+          : true
+      )
+      .reduce((acc, curr) => acc + (curr.comparativo?.faturadoAnterior || 0), 0);
+  }, [producaoFiltrada, activeTab, tipoAgregacao]);
+
+  const cortesComparadosBase = useMemo(() => {
+    if (tipoAgregacao !== 'COMPARATIVO') return 0;
+    return producaoFiltrada
+      .filter((op) =>
+        activeTab === 'cobranca_leste'
+          ? op.frente.includes('Leste')
+          : activeTab === 'cobranca_alto'
+          ? op.frente.includes('Alto')
+          : true
+      )
+      .reduce((acc, curr) => acc + (curr.comparativo?.cortesAnterior || 0), 0);
+  }, [producaoFiltrada, activeTab, tipoAgregacao]);
+
+  const variacaoFaturadoTotal = useMemo(() => {
+    if (faturadoComparadoBase === 0) return faturadoAtual > 0 ? 100 : 0;
+    return ((faturadoAtual - faturadoComparadoBase) / faturadoComparadoBase) * 100;
+  }, [faturadoAtual, faturadoComparadoBase]);
+
+  const variacaoCortesTotal = useMemo(() => {
+    if (cortesComparadosBase === 0) return cortesAtuais > 0 ? 100 : 0;
+    return ((cortesAtuais - cortesComparadosBase) / cortesComparadosBase) * 100;
+  }, [cortesAtuais, cortesComparadosBase]);
+
+  const melhorEvolucaoOperador = useMemo(() => {
+    if (tipoAgregacao !== 'COMPARATIVO') return null;
+    const ops = [...producaoFiltrada]
+      .filter((op) => (op.comparativo?.faturadoAnterior || 0) > 0)
+      .sort((a, b) => (b.comparativo?.variacaoFaturadoPerc || 0) - (a.comparativo?.variacaoFaturadoPerc || 0));
+    return ops[0] || null;
+  }, [producaoFiltrada, tipoAgregacao]);
 
   // Agrupamento de Urgências por Tipo (Cards no topo da aba)
   const urgenciasAgrupadas = useMemo(() => {
@@ -2434,6 +3181,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
       totalCortesSupressoes: 0,
       totalCortes: 0,
       totalSupressoes: 0,
+      totalRestabes: 0,
+      totalReligacoes: 0,
       totalCortesViraramPOS: 0,
       totalNegociacoesPOS: 0,
       totalReposicoesPiso: 0,
@@ -2532,6 +3281,107 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
   }, [showToast]);
 
   // Operações da Equipe
+  const handleAbrirEditarOperador = (op: OperadorProducao | Operador) => {
+    setOperadorParaEditar({
+      nome: op.nome,
+      nomeNormalizado: op.nomeNormalizado,
+      veiculo: op.veiculo,
+      frente: op.frente,
+      tipoEquipe: op.tipoEquipe || 'PROPRIA',
+      meta: op.meta,
+      percComissao: (op as any).percComissao || METAS_PADRAO.percComissaoPadrao,
+      ativo: op.ativo !== false
+    });
+    setIsNovoOperadorModal(false);
+    setModalEditarOperadorOpen(true);
+  };
+
+  const handleAbrirNovoOperador = () => {
+    setOperadorParaEditar(null);
+    setIsNovoOperadorModal(true);
+    setModalEditarOperadorOpen(true);
+  };
+
+  const handleSalvarOperadorIndividual = async (dados: Operador) => {
+    await salvarOperador(dados);
+    const atualizados = await carregarEquipe();
+    setEquipe(atualizados);
+
+    // Atualiza imediatamente a lista de producaoOperadores em tempo real
+    setProducaoOperadores((prev) => {
+      const idx = prev.findIndex((p) => p.nomeNormalizado === dados.nomeNormalizado);
+      if (idx >= 0) {
+        return prev.map((p) => {
+          if (p.nomeNormalizado !== dados.nomeNormalizado) return p;
+          const atingimento = dados.meta > 0 ? (p.faturado / dados.meta) * 100 : 100;
+          const excesso = dados.meta > 0 ? Math.max(0, p.faturado - dados.meta) : p.faturado;
+          const comissao = excesso * (dados.percComissao / 100);
+          return {
+            ...p,
+            nome: dados.nome,
+            veiculo: dados.veiculo,
+            frente: dados.frente,
+            tipoEquipe: dados.tipoEquipe,
+            meta: dados.meta,
+            percComissao: dados.percComissao,
+            atingimentoMeta: atingimento,
+            excesso: excesso,
+            comissao: comissao,
+            ativo: dados.ativo !== false
+          };
+        });
+      } else {
+        return [
+          ...prev,
+          {
+            nome: dados.nome,
+            nomeNormalizado: dados.nomeNormalizado,
+            veiculo: dados.veiculo,
+            frente: dados.frente,
+            tipoEquipe: dados.tipoEquipe || 'PROPRIA',
+            faturado: 0,
+            meta: dados.meta,
+            totalOS: 0,
+            positivas: 0,
+            cortesSupressoes: 0,
+            cortes: 0,
+            supressoes: 0,
+            restabes: 0,
+            religacoes: 0,
+            restabesReligacoes: 0,
+            negociacoesPOS: 0,
+            cortesViraramPOS: 0,
+            reposicoesPiso: 0,
+            faturasPagas: 0,
+            infrutiferas: 0,
+            fimDoDiaCount: 0,
+            percSucesso: 0,
+            atingimentoMeta: 0,
+            excesso: 0,
+            comissao: 0,
+            ativo: dados.ativo !== false
+          }
+        ];
+      }
+    });
+
+    showToast(`✅ Colaborador ${dados.nome} salvo com sucesso!`);
+  };
+
+  const handleCadastrarOperadoresLote = async (novos: Operador[]) => {
+    await salvarEquipeEmLote(novos);
+    const atualizados = await carregarEquipe();
+    setEquipe(atualizados);
+    showToast(`✅ ${novos.length} novos colaboradores cadastrados na equipe!`);
+  };
+
+  const handleLimparTodosFiltrosExcel = () => {
+    setFiltroRapidoChip('TODOS');
+    setExcelFiltros({});
+    setBuscaOperadorProducao('');
+    showToast('🔄 Filtros restaurados com sucesso.');
+  };
+
   const handleCadastrarOperadorManual = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!novoOpNome.trim()) {
@@ -2666,17 +3516,13 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
   };
 
   // Importação em massa de colaboradores via Excel
-  const handleImportarEquipeExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportarEquipeExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[sheetName], { defval: '' });
+    try {
+        const { rows } = await readExcelInWorker(file, 'generic');
 
         if (rows.length === 0) {
           alert('A planilha de colaboradores está vazia.');
@@ -2687,7 +3533,11 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
         let atualizadosCount = 0;
         let novosCount = 0;
 
-        for (const row of rows) {
+        for (let i = 0; i < rows.length; i++) {
+          if (i > 0 && i % 500 === 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          }
+          const row = rows[i];
           const nomeRaw = String(
             getValFromRow(row, [
               'Nome',
@@ -2805,14 +3655,11 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
         showToast(
           `👥 Sucesso! ${novosOperadores.length} colaboradores processados (${novosCount} novos, ${atualizadosCount} atualizados).`
         );
-      } catch (err: unknown) {
-        const error = err as Error;
-        console.error('Erro ao importar colaboradores via Excel:', error);
-        alert('Erro ao importar planilha de equipe: ' + error.message);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error('Erro ao importar colaboradores via Excel:', error);
+      alert('Erro ao importar planilha de equipe: ' + error.message);
+    }
   };
 
   // Baixar modelo de planilha para preenchimento da equipe
@@ -2929,6 +3776,13 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
 
         {/* Executive Action Cluster */}
         <div className="flex items-center flex-wrap gap-2 text-xs">
+          <div className="flex items-center gap-2 bg-[#070a12] border border-[#1e293b] px-3 py-2 rounded-xl font-mono">
+            <span className="text-slate-500 text-[10px] uppercase font-bold">Relógio SLA:</span>
+            <span className="text-blue-400 font-bold">
+              <ClockSLA onTick={atualizarSLA} />
+            </span>
+          </div>
+
           {/* BOTÃO 1: IMPORTAR PLANILHAS (ABRE MODAL DEDICADO, SEM POLUIR A FRENTE) */}
           <button
             onClick={() => setModalImportarArquivosOpen(true)}
@@ -3042,7 +3896,7 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
           }`}
         >
           <ShieldAlert className="w-3.5 h-3.5 text-orange-400" />
-          Retrabalho & Bloqueios
+          Análise de Retrabalho
           {retrabalhoFiltrado.length > 0 && (
             <span className="bg-orange-500 text-slate-950 px-2 py-0.2 rounded-full text-[10px] font-black">
               {retrabalhoFiltrado.length}
@@ -3154,20 +4008,12 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                   onChange={(e) => setFrenteFiltro(e.target.value)}
                   className="bg-[#07090e] border border-[#1f293d] text-white text-xs font-bold px-3 py-1.5 rounded-lg outline-none focus:border-blue-500 transition"
                 >
-                  <option value="GLOBAL">🌐 COBRANÇA TOTAL (ALTO + LESTE)</option>
-                  <option value="Cobrança Leste">💧 COBRANÇA LESTE</option>
+                  <option value="GLOBAL">🌐 COBRANÇA TOTAL (ALTO TIETÊ + LESTE)</option>
                   <option value="Cobrança Alto Tietê">💧 COBRANÇA ALTO TIETÊ</option>
-                  <option value="Irregularidade">🔎 IRREGULARIDADE</option>
-                  <option value="Hidrometria e Aferição">🔧 HIDROMETRIA E AFERIÇÃO</option>
+                  <option value="Cobrança Leste">💧 COBRANÇA LESTE</option>
                 </select>
               </div>
 
-              <div className="flex items-center gap-3 text-xs text-slate-400">
-                <span>Relógio Operacional:</span>
-                <span className="font-mono font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded">
-                  {formatDataHora(currentTime)}
-                </span>
-              </div>
             </div>
 
             {/* 4 Super KPI Cards */}
@@ -3362,6 +4208,13 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                 </div>
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => setModalTabelaDeParaOpen(true)}
+                    className="bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow"
+                    title="Visualizar a Tabela Parametrizada de DE → PARA (Item 3.5 do Edital Sabesp/Enorsul)"
+                  >
+                    <span>📋 Tabela DE → PARA (Edital 3.5)</span>
+                  </button>
+                  <button
                     onClick={() => setModalReposicaoPisoOpen(true)}
                     className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow"
                   >
@@ -3370,98 +4223,112 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3.5">
                 {/* 1. Cortes Executados */}
-                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-4">
+                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-3.5 shadow-sm min-h-[105px] flex flex-col justify-between">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Cortes Só</span>
-                    <span className="text-[10px] text-slate-500 font-mono">Bate Meta</span>
+                    <span className="text-[9px] text-cyan-300 font-bold bg-cyan-500/10 px-1 py-0.2 rounded font-mono">Meta</span>
                   </div>
                   <div className="text-2xl font-black text-cyan-300 font-mono mt-1">
                     {execucoesBrutasResumo.totalCortes}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
+                  <div className="text-[11px] text-slate-400">
                     Cortes estritos executados
                   </div>
                 </div>
 
                 {/* 2. Supressões Executadas */}
-                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-4">
+                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-3.5 shadow-sm min-h-[105px] flex flex-col justify-between">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Supressões Só</span>
-                    <span className="text-[10px] text-slate-500 font-mono">Bate Meta</span>
+                    <span className="text-[9px] text-blue-300 font-bold bg-blue-500/10 px-1 py-0.2 rounded font-mono">Meta</span>
                   </div>
                   <div className="text-2xl font-black text-blue-300 font-mono mt-1">
                     {execucoesBrutasResumo.totalSupressoes}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
+                  <div className="text-[11px] text-slate-400">
                     Supressões concluídas
                   </div>
                 </div>
 
                 {/* 3. Cortes que Viraram POS */}
-                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-4 border-l-2 border-l-emerald-500">
+                <div className="bg-[#07090e] border border-[#1f293d] border-l-2 border-l-emerald-500 rounded-xl p-3.5 shadow-sm min-h-[105px] flex flex-col justify-between">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Cortes Viraram POS</span>
-                    <span className="text-[10px] text-emerald-500 font-bold bg-emerald-500/10 px-1 rounded">Reversão</span>
+                    <span className="text-[9px] text-emerald-400 font-bold bg-emerald-500/10 px-1 rounded">Reversão</span>
                   </div>
                   <div className="text-2xl font-black text-emerald-300 font-mono mt-1">
                     {execucoesBrutasResumo.totalCortesViraramPOS}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
-                    Saiu p/ corte e quitou no POS
+                  <div className="text-[11px] text-slate-400">
+                    Quitou no ato da visita
                   </div>
                 </div>
 
                 {/* 4. Total Negociações POS */}
-                <div className="bg-[#07090e] border border-[#1f293d] rounded-xl p-4 border-l-2 border-l-teal-500">
+                <div className="bg-[#07090e] border border-[#1f293d] border-l-2 border-l-teal-500 rounded-xl p-3.5 shadow-sm min-h-[105px] flex flex-col justify-between">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-teal-400 uppercase tracking-wider">Negociações via POS</span>
-                    <span className="text-[10px] text-teal-400 font-mono">Concluído</span>
+                    <span className="text-[10px] font-bold text-teal-400 uppercase tracking-wider">Negociações POS</span>
+                    <span className="text-[9px] text-teal-300 font-mono bg-teal-500/10 px-1 rounded">R$ 44,28</span>
                   </div>
                   <div className="text-2xl font-black text-teal-300 font-mono mt-1">
                     {execucoesBrutasResumo.totalNegociacoesPOS}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
-                    Arrecadação e parcelamento
+                  <div className="text-[11px] text-slate-400">
+                    Pagamento na maquininha
                   </div>
                 </div>
 
-                {/* 5. Reposições de Piso */}
+                {/* 5. Restabes / Religações (Unificado) */}
+                <div className="bg-[#07090e] border border-[#1f293d] border-l-2 border-l-sky-500 rounded-xl p-3.5 shadow-sm min-h-[105px] flex flex-col justify-between">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-sky-400 uppercase tracking-wider">Restabes / Relig.</span>
+                    <span className="text-[9px] text-sky-300 font-bold bg-sky-500/10 px-1 rounded font-mono">Unificado</span>
+                  </div>
+                  <div className="text-2xl font-black text-sky-300 font-mono mt-1">
+                    {(execucoesBrutasResumo.totalRestabes || 0) + (execucoesBrutasResumo.totalReligacoes || 0)}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Restabelecimentos e religações
+                  </div>
+                </div>
+
+                {/* 6. Reposições de Piso */}
                 <div
                   onClick={() => setModalReposicaoPisoOpen(true)}
-                  className="bg-[#07090e] border border-[#1f293d] hover:border-indigo-500/50 cursor-pointer rounded-xl p-4 transition"
+                  className="bg-[#07090e] border border-[#1f293d] hover:border-indigo-500/50 cursor-pointer rounded-xl p-3.5 transition shadow-sm min-h-[105px] flex flex-col justify-between"
                   title="Clique para abrir tabela detalhada com OS e operador"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Reposição de Piso</span>
-                    <span className="text-[10px] text-indigo-400 font-bold">Lucro</span>
+                    <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Reposição Piso</span>
+                    <span className="text-[9px] text-indigo-300 font-bold bg-indigo-500/10 px-1 rounded font-mono">Lucro</span>
                   </div>
                   <div className="text-2xl font-black text-indigo-300 font-mono mt-1">
                     {execucoesBrutasResumo.totalReposicoesPiso}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
+                  <div className="text-[11px] text-slate-400">
                     R$ {formatMoney(execucoesBrutasResumo.faturadoReposicoesPiso)} faturados
                   </div>
                 </div>
               </div>
 
               {/* Destaque Especial: Cliente Apresentou Faturas Pagas */}
-              <div className="bg-[#07090e]/80 border border-purple-500/30 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="bg-[#07090e]/80 border border-amber-500/30 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2.5">
                   <span className="text-base">📄</span>
                   <div>
-                    <span className="font-bold text-purple-300">Cliente Apresentou Faturas Pagas: </span>
-                    <span className="text-slate-300 font-black font-mono text-sm px-1.5 py-0.5 bg-purple-500/20 rounded">
+                    <span className="font-bold text-amber-300">Cliente Apresentou Faturas Pagas: </span>
+                    <span className="text-slate-200 font-black font-mono text-sm px-1.5 py-0.5 bg-amber-500/20 rounded">
                       {execucoesBrutasResumo.totalFaturasPagasApresentadas} OS registradas
                     </span>
                     <span className="text-slate-400 ml-2">
-                      (Mantidas em acompanhamento segregado; não somadas no lucro principal por precaução da Diretoria com a Sabesp).
+                      (Conforme regra do Edital 3.5, exige validação prévia da Sabesp e da Diretoria para compor medição. Mantido em acompanhamento de auditoria).
                     </span>
                   </div>
                 </div>
-                <div className="text-[11px] text-slate-500 font-mono">
-                  Auditoria Sabesp / Decisão Diretoria
+                <div className="text-[11px] text-amber-400/90 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                  ⏳ Pendente Validação Sabesp / Diretoria
                 </div>
               </div>
             </div>
@@ -3992,7 +4859,7 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1f293d]/50">
-                    {urgenciasFiltradas.map((item) => {
+                    {urgenciasPageItems.map((item) => {
                       const isVencida = item.statusPrazo === 'VENCIDA';
                       const isCritica = item.statusPrazo === 'CRITICA';
                       const isAmanha = item.statusPrazo === 'AMANHA';
@@ -4137,6 +5004,14 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                   </tbody>
                 </table>
               </div>
+              <div className="px-3">
+                <PaginationControls
+                  currentPage={urgenciasPage}
+                  totalPages={urgenciasTotalPages}
+                  totalItems={urgenciasFiltradas.length}
+                  onPageChange={setUrgenciasPage}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -4185,6 +5060,41 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
               </div>
             </div>
 
+            {/* Banner de Estatísticas e Status Pós-Execução */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-[#0f1523] border border-orange-500/30 rounded-xl p-3 shadow-sm">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Total Retrabalhos Mapeados</span>
+                <span className="text-xl font-black text-orange-400 font-mono mt-0.5 block">
+                  {retrabalho.filter((r) => r.isCobranca !== false).length}
+                </span>
+                <span className="text-[10px] text-slate-500">Histórico de visitas repetidas</span>
+              </div>
+
+              <div className="bg-[#0f1523] border border-emerald-500/30 rounded-xl p-3 shadow-sm">
+                <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider block">Resolvidos nesta Carga</span>
+                <span className="text-xl font-black text-emerald-300 font-mono mt-0.5 block">
+                  {retrabalho.filter((r) => r.isCobranca !== false && r.statusOS === 'EXECUTADA' && r.statusExecucao !== 'INFRUTIFERO_REINCIDENTE' && r.novaCondicao && !r.novaCondicao.includes('Infrutífero')).length}
+                </span>
+                <span className="text-[10px] text-slate-500">Cortes, supressões e POS executados</span>
+              </div>
+
+              <div className="bg-[#0f1523] border border-red-500/30 rounded-xl p-3 shadow-sm">
+                <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider block">Permanece Infrutífero</span>
+                <span className="text-xl font-black text-red-400 font-mono mt-0.5 block">
+                  {retrabalho.filter((r) => r.isCobranca !== false && (r.statusExecucao === 'INFRUTIFERO_REINCIDENTE' || (r.novaCondicao && r.novaCondicao.includes('Infrutífero')))).length}
+                </span>
+                <span className="text-[10px] text-slate-500">Reincidência de imóvel fechado/ausente</span>
+              </div>
+
+              <div className="bg-[#0f1523] border border-purple-500/30 rounded-xl p-3 shadow-sm">
+                <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wider block">PDEs Viciados Crônicos</span>
+                <span className="text-xl font-black text-purple-300 font-mono mt-0.5 block">
+                  {retrabalho.filter((r) => r.isCobranca !== false && (r.tipoRetrabalho === 'PDE_VICIADO' || r.visitasAnteriores >= 3)).length}
+                </span>
+                <span className="text-[10px] text-slate-500">3 ou mais visitas sem desfecho</span>
+              </div>
+            </div>
+
             {/* Search and Subfilters Bar */}
             <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 flex-1 min-w-[260px]">
@@ -4212,6 +5122,16 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                   Cobrança ({retrabalho.filter((r) => r.isCobranca !== false).length})
                 </button>
                 <button
+                  onClick={() => setFiltroRetrabalhoTipo('RESOLVIDOS')}
+                  className={`px-2.5 py-1 rounded-md font-bold transition text-[11px] ${
+                    filtroRetrabalhoTipo === 'RESOLVIDOS'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'bg-slate-800 text-emerald-400 hover:text-white'
+                  }`}
+                >
+                  ✅ Resolvidos ({retrabalho.filter((r) => r.isCobranca !== false && r.statusOS === 'EXECUTADA' && r.statusExecucao !== 'INFRUTIFERO_REINCIDENTE' && r.novaCondicao && !r.novaCondicao.includes('Infrutífero')).length})
+                </button>
+                <button
                   onClick={() => setFiltroRetrabalhoTipo('FALHAS')}
                   className={`px-2.5 py-1 rounded-md font-bold transition text-[11px] ${
                     filtroRetrabalhoTipo === 'FALHAS'
@@ -4230,6 +5150,16 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                   }`}
                 >
                   🔁 Múltiplas Visitas ({retrabalho.filter((r) => r.isCobranca !== false && r.tipoRetrabalho === 'MULTIVISITAS').length})
+                </button>
+                <button
+                  onClick={() => setFiltroRetrabalhoTipo('VICIADOS')}
+                  className={`px-2.5 py-1 rounded-md font-bold transition text-[11px] ${
+                    filtroRetrabalhoTipo === 'VICIADOS'
+                      ? 'bg-purple-600 text-white shadow'
+                      : 'bg-slate-800 text-purple-400 hover:text-white'
+                  }`}
+                >
+                  🚨 PDEs Viciados ({retrabalho.filter((r) => r.isCobranca !== false && (r.tipoRetrabalho === 'PDE_VICIADO' || r.visitasAnteriores >= 3)).length})
                 </button>
                 <button
                   onClick={() => setFiltroRetrabalhoTipo('DUPLICADAS')}
@@ -4251,6 +5181,7 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                   <thead className="sticky top-0 bg-[#161f33] text-white border-b border-[#1f293d] z-10 shadow-sm">
                     <tr>
                       <th className="py-2.5 px-3 font-bold">Tipo de Bloqueio</th>
+                      <th className="py-2.5 px-3 font-bold text-center text-cyan-300">Nova Condição do PDE / Status</th>
                       <th className="py-2.5 px-3 font-bold">Nova OS (Sabesp)</th>
                       <th className="py-2.5 px-3 font-bold">PDE (10 Dígitos)</th>
                       <th className="py-2.5 px-3 font-bold">Serviço de Cobrança</th>
@@ -4262,71 +5193,114 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1f293d]/50">
-                    {retrabalhoFiltrado.map((item) => (
-                      <tr key={item.id} className="hover:bg-orange-500/5 transition">
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          {item.tipoRetrabalho === 'DUPLICIDADE_CARTEIRA' || item.duplicadaNaCarteira ? (
-                            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-black flex items-center gap-1 w-max">
-                              ⚠️ DUPLICADA NA CARTEIRA
-                            </span>
-                          ) : item.tipoRetrabalho === 'MULTIVISITAS' ? (
-                            <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded text-[10px] font-black flex items-center gap-1 w-max">
-                              🔁 MÚLTIPLAS VISITAS
-                            </span>
-                          ) : (
-                            <span className="bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded text-[10px] font-black flex items-center gap-1 w-max">
-                              🔴 FALHA ANTERIOR
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono font-bold text-white whitespace-nowrap">
-                          {item.os}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono font-bold text-orange-400 whitespace-nowrap pde-cell">
-                          <div className="flex items-center gap-1.5">
-                            <span>{item.pde}</span>
-                            <button
-                              onClick={(e) => handleCopiarPDE(item.pde, e)}
-                              className="p-1 rounded text-slate-400 hover:text-white hover:bg-orange-500/20 transition"
-                              title="Copiar PDE para consulta no sistema Sabesp"
+                    {retrabalhoPageItems.map((item) => {
+                      const isViciadoCronico = item.visitasAnteriores >= 3;
+                      return (
+                        <tr
+                          key={item.id}
+                          className={`transition ${
+                            isViciadoCronico
+                              ? 'bg-red-950/20 hover:bg-red-900/30'
+                              : 'hover:bg-orange-500/5'
+                          }`}
+                        >
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            {item.tipoRetrabalho === 'DUPLICIDADE_CARTEIRA' || item.duplicadaNaCarteira ? (
+                              <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 w-max">
+                                ⚠️ DUPLICADA
+                              </span>
+                            ) : isViciadoCronico ? (
+                              <span className="bg-red-600/30 text-red-300 border border-red-500/50 px-2 py-0.5 rounded text-[10px] font-black flex items-center gap-1 w-max animate-pulse">
+                                🚨 PDE VICIADO (3+)
+                              </span>
+                            ) : item.tipoRetrabalho === 'MULTIVISITAS' ? (
+                              <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 w-max">
+                                🔁 REINCIDENTE
+                              </span>
+                            ) : (
+                              <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 w-max">
+                                🔴 FALHA ANTERIOR
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 whitespace-nowrap text-center">
+                            {item.novaCondicao ? (
+                              <span className={`px-2.5 py-1 rounded text-[11px] font-bold inline-flex items-center gap-1 border shadow-sm ${
+                                item.novaCondicao.includes('Cortado') || item.novaCondicao.includes('Suprimido')
+                                  ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                                  : item.novaCondicao.includes('POS')
+                                  ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
+                                  : item.novaCondicao.includes('Restabelecido') || item.novaCondicao.includes('Relig')
+                                  ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                                  : item.novaCondicao.includes('Infrutífero')
+                                  ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              }`}>
+                                {item.novaCondicao}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 text-[11px] italic">Aguardando Execução</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 font-mono font-bold text-white whitespace-nowrap">
+                            {item.os}
+                          </td>
+                          <td className="py-2 px-3 font-mono font-bold text-orange-400 whitespace-nowrap pde-cell">
+                            <div className="flex items-center gap-1.5 bg-[#07090e] border border-orange-500/20 px-2 py-0.5 rounded">
+                              <span>{item.pde}</span>
+                              <button
+                                onClick={(e) => handleCopiarPDE(item.pde, e)}
+                                className="p-0.5 rounded text-slate-400 hover:text-white hover:bg-orange-500/30 transition"
+                                title="Copiar PDE para consulta no sistema Sabesp"
+                              >
+                                {copiedPde === item.pde ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 font-medium text-slate-200 max-w-[220px] truncate" title={item.descricao}>
+                            {item.descricao}
+                          </td>
+                          <td className="py-2 px-3 text-center whitespace-nowrap">
+                            <span
+                              className={`font-mono font-black text-xs px-2 py-0.5 rounded-full border ${
+                                isViciadoCronico
+                                  ? 'bg-red-600 text-white border-red-400 shadow-sm'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              }`}
                             >
-                              {copiedPde === item.pde ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
+                              {item.visitasAnteriores}x
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 font-mono text-slate-300 whitespace-nowrap">
+                            {item.ultimaData}
+                          </td>
+                          <td className="py-2 px-3 font-semibold text-amber-300 max-w-[260px] truncate" title={item.motivoFalhaAnterior}>
+                            {item.motivoFalhaAnterior}
+                          </td>
+                          <td className="py-2 px-3 text-slate-400 whitespace-nowrap">
+                            <span className="bg-slate-800/80 px-2 py-0.5 rounded text-[11px] text-slate-300">
+                              {item.operadorAnterior || 'Equipe Anterior'}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center whitespace-nowrap">
+                            <button
+                              onClick={() => setItemHistoricoModal(item)}
+                              className="text-[11px] bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 hover:text-white px-2.5 py-1 rounded border border-blue-500/30 transition font-bold"
+                            >
+                              🔍 Ver ({item.historicoVisitas?.length || item.visitasAnteriores})
                             </button>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 font-medium text-slate-200">{item.descricao}</td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className="font-mono font-black text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded-full">
-                            {item.visitasAnteriores}x
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-slate-300 whitespace-nowrap">
-                          {item.ultimaData}
-                        </td>
-                        <td className="py-2.5 px-3 font-bold text-amber-300">
-                          {item.motivoFalhaAnterior}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
-                          {item.operadorAnterior || 'Equipe Anterior'}
-                        </td>
-                        <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                          <button
-                            onClick={() => setItemHistoricoModal(item)}
-                            className="text-[11px] bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 px-2.5 py-1 rounded border border-[#1f293d] transition font-bold"
-                          >
-                            🔍 Ver ({item.historicoVisitas?.length || item.visitasAnteriores})
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                        </tr>
+                      );
+                    })}
 
                     {retrabalhoFiltrado.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="py-12 text-center text-slate-500 text-sm">
+                        <td colSpan={10} className="py-12 text-center text-slate-500 text-sm">
                           {retrabalho.filter((r) => r.isCobranca !== false).length === 0
                             ? 'Nenhum PDE repetido de cobrança detectado na carteira atual.'
                             : 'Nenhuma ordem de cobrança encontrada para os filtros selecionados.'}
@@ -4335,6 +5309,14 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                     )}
                   </tbody>
                 </table>
+              </div>
+              <div className="px-3">
+                <PaginationControls
+                  currentPage={retrabalhoPage}
+                  totalPages={retrabalhoTotalPages}
+                  totalItems={retrabalhoFiltrado.length}
+                  onPageChange={setRetrabalhoPage}
+                />
               </div>
             </div>
           </div>
@@ -4695,41 +5677,15 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                     : 'Equipe Cobrança Alto Tietê – Faturamento & Metas'}
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Taxa de Sucesso Real calculada com expurgo de Fim do Dia, ranking por colaborador e acompanhamento de cortes para a Sabesp.
+                  Taxa de Sucesso Real calculada com expurgo de Fim do Dia, ranking em lista por colaborador e acompanhamento de cortes para a Sabesp.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-slate-300 font-bold bg-blue-500/10 border border-blue-500/30 px-3 py-1.5 rounded-lg">
-                  Cortes/Supressões:{' '}
-                  <span className="font-mono text-blue-400 font-bold">
-                    {execucoesBrutasResumo.totalCortesSupressoes}
-                  </span>{' '}
-                  / 9.220
-                </span>
-
-                <span className="text-xs text-slate-300 font-bold bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-lg">
-                  Total Faturado:{' '}
-                  <span className="font-mono text-emerald-400">
-                    R${' '}
-                    {formatMoney(
-                      producaoFiltrada
-                        .filter((op) =>
-                          activeTab === 'cobranca_leste'
-                            ? op.frente.includes('Leste')
-                            : activeTab === 'cobranca_alto'
-                            ? op.frente.includes('Alto')
-                            : true
-                        )
-                        .reduce((acc, curr) => acc + curr.faturado, 0)
-                    )}
-                  </span>
-                </span>
-
+              <div className="flex items-center gap-2.5 flex-wrap">
                 {totalExecucoesProcessadas > 0 && (
                   <button
                     onClick={limparCargaExecucoes}
-                    className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition"
+                    className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 font-bold text-xs px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
                     title="Apagar dados desta planilha caso tenha subido o arquivo errado"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -4739,7 +5695,7 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
 
                 <button
                   onClick={exportarProducaoExcel}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-[#1f293d] font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-[#1f293d] font-bold text-xs px-3 py-2 rounded-xl flex items-center gap-1.5 transition shadow"
                 >
                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
                   Exportar (.xlsx)
@@ -4747,332 +5703,533 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
               </div>
             </div>
 
-            {/* SELETOR DE AGREGAÇÃO TEMPORAL (DIA / SEMANA / MÊS) & FILTROS DE EQUIPE */}
-            <div className="bg-[#0b0f19] border border-[#1f293d] rounded-xl p-4 space-y-3 shadow-md">
-              {/* Linha Superior: Seletor Primário de Período (Pills Futuristas) + Filtros de Equipe */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1f293d]/80 pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                    Agrupar Produtividade:
-                  </span>
-                  <div className="bg-[#07090e] border border-[#1f293d] p-1 rounded-xl flex items-center gap-1 shadow-inner">
-                    <button
-                      onClick={() => setTipoAgregacao('DIA')}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                        tipoAgregacao === 'DIA'
-                          ? 'bg-emerald-600 text-white shadow-md shadow-emerald-500/20'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <Calendar className="w-3.5 h-3.5" />
-                      Por Dia (Diário)
-                    </button>
+            {/* SELETOR INTEGRADO DE INTERVALO DE DATAS (DIÁRIO / SEMANAL / MENSAL / CUSTOM / COMPARATIVO) */}
+            <SeletorIntervaloDatas
+              tipoAgregacao={tipoAgregacao}
+              onChangeTipo={setTipoAgregacao}
+              intervaloCustom={intervaloCustom}
+              onChangeIntervalo={setIntervaloCustom}
+              datasDisponiveis={datasDisponiveis}
+              dataFiltro={dataFiltro}
+              onChangeDataFiltro={setDataFiltro}
+              semanaFiltro={semanaFiltro}
+              onChangeSemanaFiltro={setSemanaFiltro}
+              semanasDisponiveis={semanasDisponiveis}
+              mesFiltro={mesFiltro}
+              onChangeMesFiltro={setMesFiltro}
+              mesesDisponiveis={mesesDisponiveis}
+              somenteEquipeOficial={somenteEquipeOficial}
+              onToggleEquipeOficial={() => setSomenteEquipeOficial(!somenteEquipeOficial)}
+              operadoresExcluidosCount={operadoresExcluidos.length}
+              onRestaurarOperadores={restaurarOperadoresExcluidos}
+            />
 
-                    <button
-                      onClick={() => setTipoAgregacao('SEMANA')}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                        tipoAgregacao === 'SEMANA'
-                          ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <CalendarDays className="w-3.5 h-3.5" />
-                      Por Semana (Semanal)
-                    </button>
-
-                    <button
-                      onClick={() => setTipoAgregacao('MES')}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                        tipoAgregacao === 'MES'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-500/20'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <Layers className="w-3.5 h-3.5" />
-                      Por Mês (Mensal)
-                    </button>
+            {/* PAINEL EXECUTIVO COMPARATIVO (QUANDO O MODO COMPARATIVO ESTIVER ATIVO) */}
+            {tipoAgregacao === 'COMPARATIVO' && (
+              <div className="bg-gradient-to-r from-purple-950/40 via-[#0f1523] to-indigo-950/40 border border-purple-500/40 rounded-xl p-4 space-y-3 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-purple-500/20 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-white flex items-center gap-1.5">
+                      ⚖️ Diagnóstico Comparativo Executivo
+                    </span>
+                    <span className="text-[11px] bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded font-mono">
+                      Período A ({intervaloCustom.dataInicio.slice(5)} a {intervaloCustom.dataFim.slice(5)}) vs Período B ({intervaloCustom.dataInicioComp?.slice(5)} a {intervaloCustom.dataFimComp?.slice(5)})
+                    </span>
                   </div>
+                  <span className="text-xs text-slate-400">
+                    Acompanhamento de tendência de crescimento vs mês/período anterior
+                  </span>
                 </div>
 
-                {/* Filtros de Equipe e Operadores Excluídos */}
-                <div className="flex items-center flex-wrap gap-2">
-                  <button
-                    onClick={() => setSomenteEquipeOficial(!somenteEquipeOficial)}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition border flex items-center gap-1.5 ${
-                      somenteEquipeOficial
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                        : 'bg-slate-800 border-[#1f293d] text-slate-400 hover:text-white'
-                    }`}
-                    title="Ocultar da tabela operadores de fora que vieram na planilha e não pertencem à sua equipe cadastrada"
-                  >
-                    <Users className="w-3.5 h-3.5" />
-                    {somenteEquipeOficial ? '✓ Somente Minha Equipe' : 'Exibir Toda a Planilha'}
-                  </button>
-
-                  {operadoresExcluidos.length > 0 && (
-                    <div className="flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg text-xs text-amber-300">
-                      <span>🚫 {operadoresExcluidos.length} operador(es) ignorado(s)</span>
-                      <button
-                        onClick={restaurarOperadoresExcluidos}
-                        className="text-[10px] bg-amber-500/30 hover:bg-amber-500/50 text-white font-bold px-1.5 py-0.5 rounded transition"
-                      >
-                        Restaurar
-                      </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                  {/* Card 1: Faturamento Comparativo */}
+                  <div className="bg-[#07090e]/80 p-3 rounded-lg border border-[#1f293d]">
+                    <span className="text-[11px] text-slate-400 block mb-1">Faturamento Período A</span>
+                    <div className="text-lg font-black text-emerald-400 font-mono">
+                      R$ {formatMoney(faturadoAtual)}
                     </div>
-                  )}
+                    <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                      <span>Base B: R$ {formatMoney(faturadoComparadoBase)}</span>
+                    </div>
+                  </div>
+
+                  {/* Card 2: Crescimento / Queda Faturamento */}
+                  <div className={`p-3 rounded-lg border ${
+                    variacaoFaturadoTotal >= 0
+                      ? 'bg-emerald-950/30 border-emerald-500/40'
+                      : 'bg-red-950/30 border-red-500/40'
+                  }`}>
+                    <span className="text-[11px] text-slate-400 block mb-1">Variação Faturamento</span>
+                    <div className={`text-lg font-black font-mono flex items-center gap-1 ${
+                      variacaoFaturadoTotal >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {variacaoFaturadoTotal >= 0 ? '↗ +' : '↘ '}
+                      {variacaoFaturadoTotal.toFixed(1)}%
+                    </div>
+                    <span className={`text-[11px] font-bold ${
+                      variacaoFaturadoTotal >= 0 ? 'text-emerald-300' : 'text-red-300'
+                    }`}>
+                      {variacaoFaturadoTotal >= 0 ? '📈 Resultado Positivo (Crescimento)' : '📉 Queda em relação à base'}
+                    </span>
+                  </div>
+
+                  {/* Card 3: Cortes Comparativos */}
+                  <div className="bg-[#07090e]/80 p-3 rounded-lg border border-[#1f293d]">
+                    <span className="text-[11px] text-slate-400 block mb-1">Cortes/Supr. Período A</span>
+                    <div className="text-lg font-black text-blue-400 font-mono">
+                      {cortesAtuais}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      <span>Base B: {cortesComparadosBase} ({variacaoCortesTotal >= 0 ? '+' : ''}{variacaoCortesTotal.toFixed(1)}%)</span>
+                    </div>
+                  </div>
+
+                  {/* Card 4: Maior Destaque em Crescimento */}
+                  <div className="bg-[#07090e]/80 p-3 rounded-lg border border-[#1f293d]">
+                    <span className="text-[11px] text-slate-400 block mb-1">Destaque de Evolução</span>
+                    <div className="text-sm font-bold text-white truncate">
+                      {melhorEvolucaoOperador ? melhorEvolucaoOperador.nome : 'Todos estáveis'}
+                    </div>
+                    <div className="text-[11px] text-purple-300 font-mono mt-0.5">
+                      {melhorEvolucaoOperador?.comparativo?.variacaoFaturadoPerc !== undefined
+                        ? `+${melhorEvolucaoOperador.comparativo.variacaoFaturadoPerc.toFixed(0)}% de ganho`
+                        : 'Sem histórico anterior'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* CARDS DE KPI SUPERIORES EM CSS GRID PROPORCIONAL */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
+              {/* Card 1: Meta Sabesp */}
+              <div className="bg-[#0f1523] border border-blue-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[92px]">
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                  <span>Meta Sabesp (Cortes/Supr.)</span>
+                  <span className="text-blue-400 font-mono font-bold">{((cortesAtuais / META_SABESP_CORTES) * 100).toFixed(1)}%</span>
+                </div>
+                <div className="text-xl font-black font-mono text-white mt-1">
+                  <span className="text-blue-400">{cortesAtuais}</span>
+                  <span className="text-slate-500 text-xs font-normal"> / {META_SABESP_CORTES}</span>
+                </div>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1.5">
+                  <div
+                    className="bg-blue-500 h-full rounded-full transition-all"
+                    style={{ width: `${Math.min(100, (cortesAtuais / META_SABESP_CORTES) * 100)}%` }}
+                  />
                 </div>
               </div>
 
-              {/* Linha Inferior: Sub-Filtros Dinâmicos dependendo do tipo de agregação selecionado */}
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-                {/* 1. SELETOR DIÁRIO */}
-                {tipoAgregacao === 'DIA' && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-300 font-bold">Dia Específico:</span>
-                      {dataFiltro !== 'TODOS' ? (
-                        <span className="bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded text-[11px] font-mono">
-                          {dataFiltro}
-                        </span>
-                      ) : (
-                        <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[11px]">
-                          Todos os Dias da Planilha ({datasDisponiveis.length})
-                        </span>
-                      )}
-                    </div>
+              {/* Card 2: Restabes / Relig. Unificado */}
+              <div className="bg-[#0f1523] border border-teal-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[92px]">
+                <div className="flex items-center justify-between text-[11px] text-teal-400 font-bold uppercase tracking-wider">
+                  <span>Restabes / Religações</span>
+                  <span className="text-[10px] text-teal-300 font-mono font-bold bg-teal-500/10 px-1.5 py-0.5 rounded">Unificado</span>
+                </div>
+                <div className="text-xl font-black font-mono text-teal-300 mt-1">
+                  {restabesReligacoesAtuais} <span className="text-xs text-slate-400 font-normal">executados</span>
+                </div>
+                <span className="text-[10px] text-slate-500">Métrica 100% consolidada</span>
+              </div>
 
-                    <div className="flex items-center flex-wrap gap-1.5">
-                      <button
-                        onClick={() => setDataFiltro('TODOS')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                          dataFiltro === 'TODOS'
-                            ? 'bg-blue-600 text-white shadow'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        Todo o Período
-                      </button>
+              {/* Card 3: Total Faturado */}
+              <div className="bg-[#0f1523] border border-emerald-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[92px]">
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                  <span>Faturamento no Período</span>
+                  <span className="text-[10px] text-emerald-400 font-mono font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded">DE-PARA</span>
+                </div>
+                <div className="text-xl font-black font-mono text-emerald-400 mt-1">
+                  R$ {formatMoney(faturadoAtual)}
+                </div>
+                <span className="text-[10px] text-emerald-500/80">
+                  {execucoesBrutasResumo.totalPositivas} OS positivas realizadas
+                </span>
+              </div>
 
-                      {datasDisponiveis.slice(0, 8).map((dia) => (
-                        <button
-                          key={dia}
-                          onClick={() => setDataFiltro(dia)}
-                          className={`px-2.5 py-1 rounded-lg font-mono font-bold transition ${
-                            dataFiltro === dia
-                              ? 'bg-emerald-600 text-white shadow'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {dia.slice(0, 5)}
-                        </button>
-                      ))}
-
-                      {datasDisponiveis.length > 8 && (
-                        <select
-                          value={dataFiltro}
-                          onChange={(e) => setDataFiltro(e.target.value)}
-                          className="bg-slate-800 border border-[#1f293d] text-white text-xs px-2.5 py-1 rounded-lg outline-none font-mono"
-                        >
-                          <option value="TODOS">Outras datas...</option>
-                          {datasDisponiveis.map((d) => (
-                            <option key={d} value={d}>
-                              {d}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  </>
-                )}
-
-                {/* 2. SELETOR SEMANAL */}
-                {tipoAgregacao === 'SEMANA' && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span className="text-blue-300 font-bold">Semana Selecionada:</span>
-                      {semanaFiltro !== 'TODOS' ? (
-                        <span className="bg-blue-600 text-white font-black px-2 py-0.5 rounded text-[11px]">
-                          {semanasDisponiveis.find((s) => s.id === semanaFiltro)?.rotulo || semanaFiltro}
-                        </span>
-                      ) : (
-                        <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[11px]">
-                          Todas as Semanas ({semanasDisponiveis.length})
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center flex-wrap gap-1.5">
-                      <button
-                        onClick={() => setSemanaFiltro('TODOS')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                          semanaFiltro === 'TODOS'
-                            ? 'bg-blue-600 text-white shadow'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        Todas as Semanas
-                      </button>
-
-                      {semanasDisponiveis.slice(0, 5).map((sem) => (
-                        <button
-                          key={sem.id}
-                          onClick={() => setSemanaFiltro(sem.id)}
-                          className={`px-2.5 py-1 rounded-lg font-bold transition text-[11px] ${
-                            semanaFiltro === sem.id
-                              ? 'bg-blue-600 text-white shadow'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {sem.rotulo}
-                        </button>
-                      ))}
-
-                      {semanasDisponiveis.length > 5 && (
-                        <select
-                          value={semanaFiltro}
-                          onChange={(e) => setSemanaFiltro(e.target.value)}
-                          className="bg-slate-800 border border-[#1f293d] text-white text-xs px-2.5 py-1 rounded-lg outline-none"
-                        >
-                          <option value="TODOS">Outras semanas...</option>
-                          {semanasDisponiveis.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.rotulo}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  </>
-                )}
-
-                {/* 3. SELETOR MENSAL */}
-                {tipoAgregacao === 'MES' && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span className="text-purple-300 font-bold">Mês Selecionado:</span>
-                      {mesFiltro !== 'TODOS' ? (
-                        <span className="bg-purple-600 text-white font-black px-2 py-0.5 rounded text-[11px]">
-                          {mesesDisponiveis.find((m) => m.id === mesFiltro)?.rotulo || mesFiltro}
-                        </span>
-                      ) : (
-                        <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[11px]">
-                          Todos os Meses ({mesesDisponiveis.length})
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center flex-wrap gap-1.5">
-                      <button
-                        onClick={() => setMesFiltro('TODOS')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                          mesFiltro === 'TODOS'
-                            ? 'bg-purple-600 text-white shadow'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        Consolidado Mensal
-                      </button>
-
-                      {mesesDisponiveis.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => setMesFiltro(m.id)}
-                          className={`px-2.5 py-1 rounded-lg font-bold transition text-[11px] ${
-                            mesFiltro === m.id
-                              ? 'bg-purple-600 text-white shadow'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {m.rotulo}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+              {/* Card 4: Colaboradores Ativos & Média */}
+              <div className="bg-[#0f1523] border border-indigo-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[92px]">
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                  <span>Colaboradores na Análise</span>
+                  <span className="text-[10px] text-indigo-300 font-mono font-bold bg-indigo-500/10 px-1.5 py-0.5 rounded">
+                    {producaoFinal.length} Listados
+                  </span>
+                </div>
+                <div className="text-xl font-black font-mono text-indigo-300 mt-1 flex items-baseline gap-2">
+                  <span>{producaoFinal.length}</span>
+                  <span className="text-xs text-slate-400 font-normal">
+                    {producaoFinal.length > 0 ? `(Média R$ ${formatMoney(faturadoAtual / producaoFinal.length)})` : ''}
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-500">
+                  {equipe.filter((e) => e.ativo !== false).length} ativos no banco de equipe
+                </span>
               </div>
             </div>
 
-            {/* BARRA DE BUSCA RÁPIDA DE OPERADOR & COMPARADOR DE DESEMPENHO */}
-            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-md">
-              <div className="flex items-center gap-2 flex-1 min-w-[280px]">
-                <Search className="w-4 h-4 text-emerald-400" />
-                <input
-                  type="text"
-                  placeholder="🔍 Digite o nome do operador para buscar instantaneamente..."
-                  value={buscaOperadorProducao}
-                  onChange={(e) => setBuscaOperadorProducao(e.target.value)}
-                  className="w-full bg-[#07090e] border border-[#1f293d] text-white text-xs px-3 py-1.5 rounded-lg outline-none focus:border-emerald-500 transition"
-                />
-                {buscaOperadorProducao && (
+            {/* BARRA DE FILTROS RÁPIDOS & ATALHOS DE GESTÃO */}
+            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-md">
+              {/* Chips de Filtro Rápido */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-slate-400 font-bold text-[11px] mr-1 flex items-center gap-1">
+                  <Filter className="w-3 h-3 text-cyan-400" />
+                  Filtros:
+                </span>
+                {[
+                  { id: 'TODOS', label: `Todos (${producaoFiltrada.length})` },
+                  { id: 'LESTE', label: '💧 Leste' },
+                  { id: 'ALTO', label: '💧 Alto Tietê' },
+                  { id: 'MOTOS', label: '🏍️ Motos' },
+                  { id: 'CARROS', label: '🚗 Carros' },
+                  { id: 'META_BATIDA', label: '🎯 Meta 100%+' },
+                  { id: 'NA_TRAVE', label: '⚠️ 80-99%' },
+                  { id: 'ABAIXO_META', label: '🔴 <80%' },
+                  { id: 'MIGUE', label: '🚨 Alerta Migué' },
+                ].map((chip) => (
                   <button
-                    onClick={() => setBuscaOperadorProducao('')}
-                    className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-800 transition"
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setFiltroRapidoChip(chip.id as any)}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition ${
+                      filtroRapidoChip === chip.id
+                        ? 'bg-blue-600 text-white shadow-sm ring-1 ring-blue-400'
+                        : 'bg-[#121826] text-slate-300 hover:bg-[#1a2337] border border-[#1f293d]'
+                    }`}
                   >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Busca + Atalhos da Equipe */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative min-w-[180px]">
+                  <input
+                    type="text"
+                    placeholder="🔍 Buscar operador..."
+                    value={buscaOperadorProducao}
+                    onChange={(e) => setBuscaOperadorProducao(e.target.value)}
+                    className="w-full bg-[#07090e] border border-[#1f293d] text-white text-xs px-3 py-1.5 rounded-lg outline-none focus:border-blue-500 transition"
+                  />
+                  {buscaOperadorProducao && (
+                    <button
+                      onClick={() => setBuscaOperadorProducao('')}
+                      className="absolute right-2 top-1.5 text-slate-400 hover:text-white"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                {(filtroRapidoChip !== 'TODOS' || buscaOperadorProducao || Object.keys(excelFiltros).length > 0) && (
+                  <button
+                    type="button"
+                    onClick={handleLimparTodosFiltrosExcel}
+                    className="text-amber-400 hover:text-amber-300 text-[11px] font-bold flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/30 transition"
+                  >
+                    <X className="w-3 h-3" />
                     Limpar
                   </button>
                 )}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-slate-400">
-                  Exibindo: <strong className="text-white">{producaoFiltrada.length}</strong> colaboradores
-                </span>
 
                 <button
-                  onClick={() => {
-                    setOperadorParaComparar(producaoFiltrada[0]?.nomeNormalizado || '');
-                    setModalComparadorOpen(true);
-                  }}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition shadow"
-                  title="Comparar até 3 funcionários lado a lado com números detalhados para alinhamento de feedback"
+                  type="button"
+                  onClick={() => setActiveTab('equipe')}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow"
+                  title="Ir para a aba Gestão de Equipe para cadastrar novo colaborador, colar lista em lote ou alterar informações"
                 >
                   <Users className="w-3.5 h-3.5" />
-                  ⚖️ Comparar Colaboradores (Até 3)
+                  <span>👥 Gestão de Equipe</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOperadorParaComparar(producaoFinal[0]?.nomeNormalizado || '');
+                    setModalComparadorOpen(true);
+                  }}
+                  className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition"
+                  title="Comparar até 3 funcionários lado a lado"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>⚖️ Comparar</span>
                 </button>
               </div>
             </div>
 
-            {/* Table */}
+            {/* TABELA LISTA COMPLETA DOS COLABORADORES COM COLUNA FIXA E FILTROS EXCEL */}
             <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl overflow-hidden shadow-lg">
-              <div className="overflow-x-auto max-h-[550px]">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead className="sticky top-0 bg-[#161f33] text-white border-b border-[#1f293d] z-10 shadow-sm">
-                    <tr>
-                      <th className="py-2.5 px-3 font-bold">Operador</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Raio-X / Comparar</th>
-                      <th className="py-2.5 px-3 font-bold">Tipo Equipe</th>
-                      <th className="py-2.5 px-3 font-bold">Veículo</th>
-                      <th className="py-2.5 px-3 font-bold">Frente</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Total OS</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Cortes / Supr.</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Negoc. POS</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Piso</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Positivas</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Infrutíferas</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Fim do Dia</th>
-                      <th className="py-2.5 px-3 font-bold text-center">Sucesso Real (%)</th>
-                      <th className="py-2.5 px-3 font-bold text-right">Faturado (R$)</th>
-                      <th className="py-2.5 px-3 font-bold text-right">Meta (R$)</th>
-                      <th className="py-2.5 px-3 font-bold text-center">% Meta</th>
-                      <th className="py-2.5 px-3 font-bold text-right">Comissão</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#1f293d]/50">
-                    {producaoFiltrada
-                      .filter((op) =>
-                        activeTab === 'cobranca_leste'
-                          ? op.frente.includes('Leste')
-                          : activeTab === 'cobranca_alto'
-                          ? op.frente.includes('Alto')
-                          : true
-                      )
-                      .map((op) => (
+              <div className="p-3 bg-[#161f33] border-b border-[#1f293d] flex items-center justify-between text-xs">
+                <span className="font-bold text-white flex items-center gap-2">
+                  <Table className="w-4 h-4 text-emerald-400" />
+                  Lista Completa de Desempenho ({producaoFinal.length} colaboradores exibidos)
+                </span>
+                <span className="text-slate-400 text-[11px]">
+                  📌 Coluna do Operador fixada à esquerda • Clique em <span className="text-cyan-300 font-bold">✏️</span> para editar dados
+                </span>
+              </div>
+
+                <div className="overflow-x-auto max-h-[550px]">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="sticky top-0 bg-[#161f33] text-white border-b border-[#1f293d] z-20 shadow-sm">
+                      <tr>
+                        {/* Coluna Fixa: Operador */}
+                        <th className="sticky left-0 bg-[#161f33] z-30 py-2.5 px-3 font-bold border-r border-[#1f293d] shadow-md">
+                          <div className="flex items-center justify-between gap-1">
+                            <span>Operador</span>
+                            <ExcelColumnFilter
+                              columnId="operador"
+                              columnTitle="Operador"
+                              options={opcoesOperadoresExcel}
+                              selectedValues={excelFiltros.operador?.selected || []}
+                              onChangeSelectedValues={(vals) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  operador: { ...prev.operador, selected: vals, sort: prev.operador?.sort || null }
+                                }))
+                              }
+                              sortDirection={excelFiltros.operador?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  operador: { ...prev.operador, selected: prev.operador?.selected || [], sort: dir }
+                                }))
+                              }
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">Ações Rápidas</th>
+
+                        <th className="py-2.5 px-3 font-bold">
+                          <div className="flex items-center justify-between gap-1">
+                            <span>Frente</span>
+                            <ExcelColumnFilter
+                              columnId="frente"
+                              columnTitle="Frente"
+                              options={opcoesFrentesExcel}
+                              selectedValues={excelFiltros.frente?.selected || []}
+                              onChangeSelectedValues={(vals) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  frente: { ...prev.frente, selected: vals, sort: prev.frente?.sort || null }
+                                }))
+                              }
+                              sortDirection={excelFiltros.frente?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  frente: { ...prev.frente, selected: prev.frente?.selected || [], sort: dir }
+                                }))
+                              }
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold">
+                          <div className="flex items-center justify-between gap-1">
+                            <span>Veículo</span>
+                            <ExcelColumnFilter
+                              columnId="veiculo"
+                              columnTitle="Veículo"
+                              options={opcoesVeiculosExcel}
+                              selectedValues={excelFiltros.veiculo?.selected || []}
+                              onChangeSelectedValues={(vals) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  veiculo: { ...prev.veiculo, selected: vals, sort: prev.veiculo?.sort || null }
+                                }))
+                              }
+                              sortDirection={excelFiltros.veiculo?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  veiculo: { ...prev.veiculo, selected: prev.veiculo?.selected || [], sort: dir }
+                                }))
+                              }
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold">
+                          <div className="flex items-center justify-between gap-1">
+                            <span>Equipe</span>
+                            <ExcelColumnFilter
+                              columnId="tipoEquipe"
+                              columnTitle="Tipo de Equipe"
+                              options={opcoesTiposEquipeExcel}
+                              selectedValues={excelFiltros.tipoEquipe?.selected || []}
+                              onChangeSelectedValues={(vals) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  tipoEquipe: { ...prev.tipoEquipe, selected: vals, sort: prev.tipoEquipe?.sort || null }
+                                }))
+                              }
+                              sortDirection={excelFiltros.tipoEquipe?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  tipoEquipe: { ...prev.tipoEquipe, selected: prev.tipoEquipe?.selected || [], sort: dir }
+                                }))
+                              }
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Total OS</span>
+                            <ExcelColumnFilter
+                              columnId="totalOS"
+                              columnTitle="Total OS"
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.totalOS?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  totalOS: { ...prev.totalOS, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Cortes/Supr.</span>
+                            <ExcelColumnFilter
+                              columnId="cortes"
+                              columnTitle="Cortes / Supr."
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.cortes?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  cortes: { ...prev.cortes, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center text-teal-300">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Restabe/Relig.</span>
+                            <ExcelColumnFilter
+                              columnId="restabes"
+                              columnTitle="Restabe / Relig."
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.restabes?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  restabes: { ...prev.restabes, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>POS</span>
+                            <ExcelColumnFilter
+                              columnId="pos"
+                              columnTitle="Negoc. POS"
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.pos?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  pos: { ...prev.pos, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">Piso</th>
+                        <th className="py-2.5 px-3 font-bold text-center">Positivas</th>
+                        <th className="py-2.5 px-3 font-bold text-center">Infrutíferas</th>
+                        <th className="py-2.5 px-3 font-bold text-center">Fim do Dia</th>
+
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Sucesso (%)</span>
+                            <ExcelColumnFilter
+                              columnId="sucesso"
+                              columnTitle="Sucesso Real (%)"
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.sucesso?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  sucesso: { ...prev.sucesso, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <span>Faturado (R$)</span>
+                            <ExcelColumnFilter
+                              columnId="faturado"
+                              columnTitle="Faturado (R$)"
+                              options={[]}
+                              selectedValues={[]}
+                              onChangeSelectedValues={() => {}}
+                              sortDirection={excelFiltros.faturado?.sort || null}
+                              onSortChange={(dir) =>
+                                setExcelFiltros((prev) => ({
+                                  ...prev,
+                                  faturado: { ...prev.faturado, selected: [], sort: dir }
+                                }))
+                              }
+                              isNumeric={true}
+                            />
+                          </div>
+                        </th>
+
+                        <th className="py-2.5 px-3 font-bold text-right">Meta (R$)</th>
+                        <th className="py-2.5 px-3 font-bold text-center">% Meta</th>
+                        <th className="py-2.5 px-3 font-bold text-right">Comissão</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1f293d]/50">
+                      {producaoPageItems.map((op) => (
                         <tr key={op.nomeNormalizado} className="hover:bg-slate-800/20 transition">
-                          <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
-                            👤 {op.nome}
+                          {/* Coluna Fixa: Operador */}
+                          <td className="sticky left-0 bg-[#0f1523] z-10 py-2.5 px-3 font-bold text-white whitespace-nowrap border-r border-[#1f293d] shadow-sm">
+                            <div className="flex items-center gap-2">
+                              <span>👤 {op.nome}</span>
+                              <button
+                                onClick={() => handleAbrirEditarOperador(op)}
+                                className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition"
+                                title="Editar operador"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </td>
+
                           <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-1.5">
+                            <div className="flex items-center justify-center gap-1">
                               <button
                                 onClick={() => {
                                   setDossieOperadorSelecionado({
@@ -5085,6 +6242,8 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                                     cortesSupressoes: op.cortesSupressoes,
                                     cortes: op.cortes || 0,
                                     supressoes: op.supressoes || 0,
+                                    restabes: op.restabes || 0,
+                                    religacoes: op.religacoes || 0,
                                     negociacoesPOS: op.negociacoesPOS || 0,
                                     cortesViraramPOS: op.cortesViraramPOS || 0,
                                     reposicoesPiso: op.reposicoesPiso || 0,
@@ -5107,15 +6266,10 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                                     }
                                   });
                                 }}
-                                className={`px-2 py-1 rounded-md font-bold text-[10px] flex items-center justify-center gap-1 transition shadow-sm ${
-                                  op.diagnostico?.padraoSuspeitoMigue
-                                    ? 'bg-red-500 hover:bg-red-400 text-white animate-pulse'
-                                    : 'bg-blue-600 hover:bg-blue-500 text-white'
-                                }`}
-                                title="Abrir Raio-X individual do operador com histórico diário, negociações POS e baixas mais comuns"
+                                className="px-2 py-0.5 rounded font-bold text-[10px] bg-blue-600 hover:bg-blue-500 text-white transition"
+                                title="Raio-X individual"
                               >
-                                <UserCheck className="w-3.5 h-3.5" />
-                                {op.diagnostico?.padraoSuspeitoMigue ? '⚠️ Raio-X' : '🔬 Raio-X'}
+                                🔬 Raio-X
                               </button>
 
                               <button
@@ -5123,63 +6277,57 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                                   setOperadorParaComparar(op.nomeNormalizado);
                                   setModalComparadorOpen(true);
                                 }}
-                                className="px-2 py-1 rounded-md font-bold text-[10px] flex items-center justify-center gap-1 transition bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30"
-                                title={`Comparar ${op.nome} lado a lado com até 2 outros operadores`}
+                                className="px-1.5 py-0.5 rounded font-bold text-[10px] bg-indigo-600/20 text-indigo-300 border border-indigo-500/30"
+                                title="Comparar"
                               >
-                                <Users className="w-3 h-3" />
                                 ⚖️
                               </button>
 
                               <button
                                 onClick={() => removerOperadorDaProducao(op.nomeNormalizado, op.nome)}
-                                className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/20 transition"
-                                title={`Desconsiderar ${op.nome} desta análise (não pertence à minha equipe)`}
+                                className="p-1 rounded text-slate-500 hover:text-red-400"
+                                title="Ocultar da análise"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Trash2 className="w-3 h-3" />
                               </button>
                             </div>
                           </td>
+
+                          <td className="py-2.5 px-3 text-slate-300 whitespace-nowrap">{op.frente}</td>
+                          <td className="py-2.5 px-3 text-slate-300 whitespace-nowrap">{op.veiculo}</td>
                           <td className="py-2.5 px-3 text-slate-300 whitespace-nowrap">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                op.tipoEquipe === 'APOIO_EXTERNO'
-                                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
-                                  : 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
-                              }`}
-                            >
-                              {op.tipoEquipe === 'APOIO_EXTERNO' ? 'Apoio Externo' : 'Equipe Própria'}
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              op.tipoEquipe === 'APOIO_EXTERNO'
+                                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                                : 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                            }`}>
+                              {op.tipoEquipe === 'APOIO_EXTERNO' ? 'Apoio' : 'Própria'}
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 text-slate-300 whitespace-nowrap">{op.veiculo}</td>
-                          <td className="py-2.5 px-3 text-slate-300 whitespace-nowrap">{op.frente}</td>
+
                           <td className="py-2.5 px-3 font-mono font-bold text-center text-white">{op.totalOS}</td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-center text-blue-400 bg-blue-500/5">
-                            {op.cortesSupressoes}
+                          <td className="py-2.5 px-3 font-mono font-bold text-center text-blue-400 bg-blue-500/5">{op.cortesSupressoes}</td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-center text-teal-300 bg-teal-500/5">
+                            {(op.restabes || 0) + (op.religacoes || 0)}
                           </td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-center text-purple-300 bg-purple-500/5">
-                            {op.negociacoesPOS || 0}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-center text-amber-300 bg-amber-500/5">
-                            {op.reposicoesPiso || 0}
-                          </td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-center text-purple-300 bg-purple-500/5">{op.negociacoesPOS || 0}</td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-center text-amber-300 bg-amber-500/5">{op.reposicoesPiso || 0}</td>
                           <td className="py-2.5 px-3 font-mono font-bold text-center text-emerald-400">{op.positivas}</td>
                           <td className="py-2.5 px-3 font-mono font-bold text-center text-red-400">{op.infrutiferas}</td>
-                          <td className="py-2.5 px-3 font-mono text-center text-slate-500" title="Expurgado da taxa de sucesso">
-                            {op.fimDoDiaCount}
-                          </td>
+                          <td className="py-2.5 px-3 font-mono text-center text-slate-500">{op.fimDoDiaCount}</td>
+
                           <td className="py-2.5 px-3 font-mono font-bold text-center">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[11px] ${
-                                op.percSucesso >= 60
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                                  : op.percSucesso >= 40
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                                  : 'bg-red-500/20 text-red-400 border border-red-500/40'
-                              }`}
-                            >
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] ${
+                              op.percSucesso >= 60
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                : op.percSucesso >= 40
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                : 'bg-red-500/20 text-red-400 border border-red-500/40'
+                            }`}>
                               {op.percSucesso.toFixed(1)}%
                             </span>
                           </td>
+
                           <td className="py-2.5 px-3 font-mono font-bold text-right text-emerald-400 whitespace-nowrap">
                             R$ {formatMoney(op.faturado)}
                           </td>
@@ -5187,15 +6335,13 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                             R$ {formatMoney(op.meta)}
                           </td>
                           <td className="py-2.5 px-3 font-mono text-center">
-                            <span
-                              className={`font-bold ${
-                                op.atingimentoMeta >= 100
-                                  ? 'text-emerald-400'
-                                  : op.atingimentoMeta >= 70
-                                  ? 'text-amber-400'
-                                  : 'text-red-400'
-                              }`}
-                            >
+                            <span className={`font-bold ${
+                              op.atingimentoMeta >= 100
+                                ? 'text-emerald-400'
+                                : op.atingimentoMeta >= 70
+                                ? 'text-amber-400'
+                                : 'text-red-400'
+                            }`}>
                               {op.atingimentoMeta.toFixed(0)}%
                             </span>
                           </td>
@@ -5205,17 +6351,25 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
                         </tr>
                       ))}
 
-                    {producaoFiltrada.length === 0 && (
-                      <tr>
-                        <td colSpan={15} className="py-12 text-center text-slate-500 text-sm">
-                          Nenhum dado de produção disponível. Suba a planilha de execuções no Motor 1.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                      {producaoFinal.length === 0 && (
+                        <tr>
+                          <td colSpan={18} className="py-12 text-center text-slate-500 text-sm">
+                            Nenhum colaborador corresponde aos filtros selecionados.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3">
+                  <PaginationControls
+                    currentPage={producaoPage}
+                    totalPages={producaoTotalPages}
+                    totalItems={producaoFinal.length}
+                    onPageChange={setProducaoPage}
+                  />
+                </div>
               </div>
-            </div>
           </div>
         )}
 
@@ -5327,292 +6481,556 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
         )}
 
         {/* ========================================================= */}
-        {/* ABA 9: BASE DA EQUIPE */}
+        {/* ABA 9: GESTÃO E CADASTRO DA EQUIPE */}
         {/* ========================================================= */}
         {activeTab === 'equipe' && (
           <div className="space-y-6">
-            {/* Header / Registration */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Cadastro Manual */}
-              <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-5">
-                <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                  <Users className="w-4 h-4 text-blue-400" />
-                  Cadastrar Colaborador Manual
+            {/* Header / Apresentação da Central de Equipe */}
+            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-black text-white flex items-center gap-2">
+                  <Users className="w-5 h-5 text-emerald-400" />
+                  Central de Gestão da Equipe & Cadastro de Colaboradores
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Cadastre novos operadores, cole listas de WhatsApp em lote, configure frentes, veículos e metas com sincronização automática e instantânea no faturamento.
+                </p>
+              </div>
+
+              {/* Botões de Ação Rápida */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleAbrirNovoOperador}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition shadow"
+                  title="Cadastrar um novo operador com formulário limpo e metas automáticas"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>➕ Novo Colaborador</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModalCadastroRapidoLoteOpen(true)}
+                  className="bg-[#161f33] hover:bg-[#1f2c47] text-emerald-300 border border-emerald-500/30 font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition"
+                  title="Colar lista de nomes direto do WhatsApp ou planilha para cadastrar múltiplos operadores em segundos"
+                >
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  <span>📋 Colar Lista (Lote WhatsApp)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModalAjusteRapidoEquipeOpen(true)}
+                  className="bg-[#161f33] hover:bg-[#1f2c47] text-cyan-300 border border-cyan-500/30 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition"
+                  title="Configurar todos os operadores em 1 clique (frente, veículo e meta padrão)"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>⚡ Ajuste em Massa</span>
+                </button>
+
+                <button
+                  onClick={handleBaixarModeloEquipeExcel}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-[#1f293d] font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition"
+                  title="Baixar modelo em Excel para preencher equipe"
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-400" />
+                  Modelo (.xlsx)
+                </button>
+
+                <label
+                  className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow"
+                  title="Subir planilha Excel com colaboradores, modalidade (moto/carro), frente e metas"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  Subir Planilha (.xlsx)
+                  <input
+                    ref={fileInputEquipeRef}
+                    type="file"
+                    accept=".xlsx, .xls, .csv"
+                    className="hidden"
+                    onChange={handleImportarEquipeExcel}
+                  />
+                </label>
+
+                <button
+                  onClick={handleToggleModoEdicao}
+                  className={`text-xs font-bold px-3 py-2 rounded-lg border transition ${
+                    isModoEdicaoEquipe
+                      ? 'bg-red-500 text-white border-red-400'
+                      : 'bg-amber-500 text-slate-950 border-amber-400'
+                  }`}
+                  title="Editar dados diretamente nas células da tabela"
+                >
+                  {isModoEdicaoEquipe ? 'Cancelar Edição' : '✏️ Edição em Linha'}
+                </button>
+
+                {isModoEdicaoEquipe && (
+                  <button
+                    onClick={handleSalvarEdicaoMassa}
+                    className="text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-lg transition shadow flex items-center gap-1"
+                  >
+                    💾 Salvar Tudo
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* CARDS DE ESTATÍSTICAS DA EQUIPE EM CSS GRID */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+              {/* Card 1: Total Equipe */}
+              <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[95px]">
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                  <span>Total Colaboradores</span>
+                  <span className="text-emerald-400 font-bold font-mono">
+                    {equipe.filter((e) => e.ativo !== false).length} Ativos
+                  </span>
+                </div>
+                <div className="text-2xl font-black font-mono text-white mt-1">
+                  {equipe.length}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {equipe.filter((e) => e.ativo === false).length} inativos no histórico
+                </div>
+              </div>
+
+              {/* Card 2: Leste vs Alto Tietê */}
+              <div className="bg-[#0f1523] border border-blue-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[95px]">
+                <div className="flex items-center justify-between text-[11px] text-blue-400 font-bold uppercase tracking-wider">
+                  <span>Frentes de Cobrança</span>
+                  <span className="text-[10px] text-blue-300 font-mono font-bold bg-blue-500/10 px-1.5 py-0.5 rounded">Frentes</span>
+                </div>
+                <div className="text-base font-black font-mono text-white mt-1 flex items-center gap-3">
+                  <span className="text-cyan-300">
+                    {equipe.filter((e) => e.frente.includes('Leste')).length} <span className="text-xs font-normal text-slate-400">Leste</span>
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-indigo-300">
+                    {equipe.filter((e) => e.frente.includes('Alto')).length} <span className="text-xs font-normal text-slate-400">Alto Tietê</span>
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Distribuição geográfica de cobrança
+                </div>
+              </div>
+
+              {/* Card 3: Motos vs Carros */}
+              <div className="bg-[#0f1523] border border-teal-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[95px]">
+                <div className="flex items-center justify-between text-[11px] text-teal-400 font-bold uppercase tracking-wider">
+                  <span>Veículos / Modais</span>
+                  <span className="text-[10px] text-teal-300 font-mono font-bold bg-teal-500/10 px-1.5 py-0.5 rounded">Modais</span>
+                </div>
+                <div className="text-base font-black font-mono text-white mt-1 flex items-center gap-3">
+                  <span className="text-emerald-400">
+                    {equipe.filter((e) => e.veiculo === 'Moto').length} 🏍️ <span className="text-xs font-normal text-slate-400">Motos</span>
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-amber-300">
+                    {equipe.filter((e) => e.veiculo === 'Carro').length} 🚗 <span className="text-xs font-normal text-slate-400">Carros</span>
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {equipe.filter((e) => e.veiculo !== 'Moto' && e.veiculo !== 'Carro').length} pedestres ou ajudantes
+                </div>
+              </div>
+
+              {/* Card 4: Própria vs Apoio */}
+              <div className="bg-[#0f1523] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between shadow-sm min-h-[95px]">
+                <div className="flex items-center justify-between text-[11px] text-purple-400 font-bold uppercase tracking-wider">
+                  <span>Vínculo de Equipe</span>
+                  <span className="text-[10px] text-purple-300 font-mono font-bold bg-purple-500/10 px-1.5 py-0.5 rounded">Equipe</span>
+                </div>
+                <div className="text-base font-black font-mono text-white mt-1 flex items-center gap-3">
+                  <span className="text-blue-300">
+                    {equipe.filter((e) => e.tipoEquipe !== 'APOIO_EXTERNO').length} <span className="text-xs font-normal text-slate-400">Própria</span>
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-purple-300">
+                    {equipe.filter((e) => e.tipoEquipe === 'APOIO_EXTERNO').length} <span className="text-xs font-normal text-slate-400">Apoio</span>
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Custos e metas individualizadas
+                </div>
+              </div>
+            </div>
+
+            {/* BARRA DE FILTROS RÁPIDOS & BUSCA DE EQUIPE */}
+            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-slate-400 font-bold text-[11px] mr-1 flex items-center gap-1">
+                  <Filter className="w-3 h-3 text-cyan-400" />
+                  Filtrar Base:
+                </span>
+                {[
+                  { id: 'TODOS', label: `Todos (${equipe.length})` },
+                  { id: 'LESTE', label: '💧 Leste' },
+                  { id: 'ALTO', label: '💧 Alto Tietê' },
+                  { id: 'MOTOS', label: '🏍️ Motos' },
+                  { id: 'CARROS', label: '🚗 Carros' },
+                  { id: 'PROPRIA', label: '🛡️ Própria' },
+                  { id: 'APOIO', label: '🤝 Apoio' },
+                  { id: 'ATIVOS', label: '🟢 Ativos' },
+                  { id: 'INATIVOS', label: '⚪ Inativos' },
+                ].map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setFiltroRapidoEquipe(chip.id as any)}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition ${
+                      filtroRapidoEquipe === chip.id
+                        ? 'bg-blue-600 text-white shadow-sm ring-1 ring-blue-400'
+                        : 'bg-[#121826] text-slate-300 hover:bg-[#1a2337] border border-[#1f293d]'
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="relative min-w-[220px]">
+                  <input
+                    type="text"
+                    placeholder="🔍 Buscar colaborador por nome..."
+                    value={buscaEquipe}
+                    onChange={(e) => setBuscaEquipe(e.target.value)}
+                    className="w-full bg-[#07090e] border border-[#1f293d] text-white text-xs px-3 py-1.5 rounded-lg outline-none focus:border-blue-500 transition"
+                  />
+                  {buscaEquipe && (
+                    <button
+                      onClick={() => setBuscaEquipe('')}
+                      className="absolute right-2 top-1.5 text-slate-400 hover:text-white"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                {(filtroRapidoEquipe !== 'TODOS' || buscaEquipe) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFiltroRapidoEquipe('TODOS');
+                      setBuscaEquipe('');
+                    }}
+                    className="text-amber-400 hover:text-amber-300 text-[11px] font-bold flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/30 transition"
+                  >
+                    <X className="w-3 h-3" />
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* TABELA PRINCIPAL DA EQUIPE */}
+            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl overflow-hidden shadow-lg">
+              <div className="p-3 bg-[#161f33] border-b border-[#1f293d] flex items-center justify-between text-xs">
+                <span className="font-bold text-white flex items-center gap-2">
+                  <Database className="w-4 h-4 text-emerald-400" />
+                  Base Cadastral da Equipe ({equipe.filter((op) => {
+                    if (buscaEquipe && !normalize(op.nome).includes(normalize(buscaEquipe))) return false;
+                    if (filtroRapidoEquipe === 'LESTE') return op.frente.includes('Leste');
+                    if (filtroRapidoEquipe === 'ALTO') return op.frente.includes('Alto');
+                    if (filtroRapidoEquipe === 'MOTOS') return op.veiculo === 'Moto';
+                    if (filtroRapidoEquipe === 'CARROS') return op.veiculo === 'Carro';
+                    if (filtroRapidoEquipe === 'PROPRIA') return op.tipoEquipe !== 'APOIO_EXTERNO';
+                    if (filtroRapidoEquipe === 'APOIO') return op.tipoEquipe === 'APOIO_EXTERNO';
+                    if (filtroRapidoEquipe === 'ATIVOS') return op.ativo !== false;
+                    if (filtroRapidoEquipe === 'INATIVOS') return op.ativo === false;
+                    return true;
+                  }).length} exibidos)
+                </span>
+                <span className="text-slate-400 text-[11px]">
+                  Clique em <span className="text-cyan-300 font-bold">✏️</span> para alterar informações ou <span className="text-emerald-400 font-bold">➕ Novo</span> para cadastrar
+                </span>
+              </div>
+
+              <div className="overflow-x-auto max-h-[500px]">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="sticky top-0 bg-[#161f33] text-white border-b border-[#1f293d] z-10 shadow-sm">
+                    <tr>
+                      <th className="py-2.5 px-3 font-bold text-center w-20">Status</th>
+                      <th className="py-2.5 px-3 font-bold">Colaborador</th>
+                      <th className="py-2.5 px-3 font-bold">Frente de Atuação</th>
+                      <th className="py-2.5 px-3 font-bold">Veículo / Modalidade</th>
+                      <th className="py-2.5 px-3 font-bold">Tipo de Equipe</th>
+                      <th className="py-2.5 px-3 font-bold text-right">Meta Padrão (R$)</th>
+                      <th className="py-2.5 px-3 font-bold text-center">% Comissão</th>
+                      <th className="py-2.5 px-3 font-bold text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1f293d]/50">
+                    {equipe
+                      .filter((op) => {
+                        if (buscaEquipe && !normalize(op.nome).includes(normalize(buscaEquipe))) return false;
+                        if (filtroRapidoEquipe === 'LESTE') return op.frente.includes('Leste');
+                        if (filtroRapidoEquipe === 'ALTO') return op.frente.includes('Alto');
+                        if (filtroRapidoEquipe === 'MOTOS') return op.veiculo === 'Moto';
+                        if (filtroRapidoEquipe === 'CARROS') return op.veiculo === 'Carro';
+                        if (filtroRapidoEquipe === 'PROPRIA') return op.tipoEquipe !== 'APOIO_EXTERNO';
+                        if (filtroRapidoEquipe === 'APOIO') return op.tipoEquipe === 'APOIO_EXTERNO';
+                        if (filtroRapidoEquipe === 'ATIVOS') return op.ativo !== false;
+                        if (filtroRapidoEquipe === 'INATIVOS') return op.ativo === false;
+                        return true;
+                      })
+                      .map((op) => {
+                        const norm = op.nomeNormalizado;
+                        const bufferOp = edicaoEquipeBuffer[norm] || op;
+
+                        return (
+                          <tr key={norm} className="hover:bg-slate-800/25 transition">
+                            {/* 1. Status com clique para alternar */}
+                            <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                              <button
+                                onClick={() => handleAlternarStatusOperador(norm)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
+                                  op.ativo !== false
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                                    : 'bg-red-500/20 text-red-300 border-red-500/40 hover:bg-red-500/30'
+                                }`}
+                                title="Clique para Ativar / Inativar este colaborador"
+                              >
+                                {op.ativo !== false ? '🟢 Ativo' : '⚪ Inativo'}
+                              </button>
+                            </td>
+
+                            {/* 2. Colaborador com Avatar e Botão Editar Rápido */}
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-7 h-7 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center font-bold text-xs shrink-0">
+                                  {op.nome.slice(0, 2).toUpperCase()}
+                                </div>
+                                <span className="font-bold text-white text-xs">{op.nome}</span>
+                                <button
+                                  onClick={() => handleAbrirEditarOperador(op)}
+                                  className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition"
+                                  title="Editar informações completas deste colaborador"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* 3. Frente */}
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {isModoEdicaoEquipe ? (
+                                <select
+                                  value={bufferOp.frente}
+                                  onChange={(e) => {
+                                    const val = e.target.value as any;
+                                    setEdicaoEquipeBuffer((prev) => ({
+                                      ...prev,
+                                      [norm]: { ...prev[norm], frente: val }
+                                    }));
+                                  }}
+                                  className="bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs outline-none"
+                                >
+                                  <option value="Cobrança Leste">Cobrança Leste</option>
+                                  <option value="Cobrança Alto Tietê">Cobrança Alto Tietê</option>
+                                  <option value="Irregularidade">Irregularidade</option>
+                                  <option value="Hidrometria e Aferição">Hidrometria</option>
+                                </select>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  op.frente.includes('Alto')
+                                    ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                                    : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                }`}>
+                                  {op.frente}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* 4. Veículo */}
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {isModoEdicaoEquipe ? (
+                                <select
+                                  value={bufferOp.veiculo}
+                                  onChange={(e) => {
+                                    const val = e.target.value as any;
+                                    setEdicaoEquipeBuffer((prev) => ({
+                                      ...prev,
+                                      [norm]: {
+                                        ...prev[norm],
+                                        veiculo: val,
+                                        meta:
+                                          val === 'Moto'
+                                            ? METAS_PADRAO.metaMoto
+                                            : val === 'Carro'
+                                            ? METAS_PADRAO.metaCarro
+                                            : METAS_PADRAO.metaPedestre
+                                      }
+                                    }));
+                                  }}
+                                  className="bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs outline-none"
+                                >
+                                  <option value="Moto">Moto</option>
+                                  <option value="Carro">Carro</option>
+                                  <option value="Pedestre">Pedestre</option>
+                                  <option value="Ajudante de Carro">Ajudante</option>
+                                </select>
+                              ) : (
+                                <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px] border border-[#1f293d]">
+                                  {op.veiculo === 'Carro' ? '🚗 Carro' : op.veiculo === 'Moto' ? '🏍️ Moto' : op.veiculo}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* 5. Tipo de Equipe */}
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                op.tipoEquipe === 'APOIO_EXTERNO'
+                                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+                                  : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                              }`}>
+                                {op.tipoEquipe === 'APOIO_EXTERNO' ? 'Apoio' : 'Própria'}
+                              </span>
+                            </td>
+
+                            {/* 6. Meta */}
+                            <td className="py-2.5 px-3 text-right font-mono whitespace-nowrap">
+                              {isModoEdicaoEquipe ? (
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={bufferOp.meta}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value) || 0;
+                                    setEdicaoEquipeBuffer((prev) => ({
+                                      ...prev,
+                                      [norm]: { ...prev[norm], meta: val }
+                                    }));
+                                  }}
+                                  className="w-24 bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs font-mono text-right outline-none"
+                                />
+                              ) : (
+                                <span className="text-emerald-400 font-bold">R$ {formatMoney(op.meta)}</span>
+                              )}
+                            </td>
+
+                            {/* 7. Comissão */}
+                            <td className="py-2.5 px-3 text-center font-mono whitespace-nowrap">
+                              <span className="text-amber-400 font-bold">
+                                {(((op as any).percComissao ?? 0.1) * 100).toFixed(0)}%
+                              </span>
+                            </td>
+
+                            {/* 8. Ações */}
+                            <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleAbrirEditarOperador(op)}
+                                  className="px-2 py-1 rounded text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-[#1f293d] transition flex items-center gap-1"
+                                  title="Editar informações completas"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                  <span>Editar</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleExcluirOperador(norm)}
+                                  className="px-1.5 py-1 rounded text-[11px] font-bold text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition"
+                                  title={`Excluir ${op.nome} da equipe`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                    {equipe.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="py-12 text-center text-slate-500 text-sm">
+                          Nenhum colaborador cadastrado. Clique em <strong className="text-emerald-400">➕ Novo Colaborador</strong> ou <strong className="text-emerald-400">📋 Colar Lista</strong> acima.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* SEÇÃO INFERIOR: CADASTRO MANUAL EXPRESSO */}
+            <div className="bg-[#0f1523] border border-[#1f293d] rounded-xl p-5 shadow-sm">
+              <div className="flex items-center justify-between mb-4 border-b border-[#1f293d]/50 pb-2">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-4 h-4 text-emerald-400" />
+                  Cadastro Manual Rápido (Formulário Direto)
                 </h3>
+                <span className="text-xs text-slate-400">
+                  Ou utilize o botão <strong className="text-emerald-400">➕ Novo Colaborador</strong> no topo
+                </span>
+              </div>
 
-                <form onSubmit={handleCadastrarOperadorManual} className="space-y-3 text-xs">
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Nome Completo</label>
-                    <input
-                      type="text"
-                      placeholder="Ex: Joãozinho Silva"
-                      value={novoOpNome}
-                      onChange={(e) => setNovoOpNome(e.target.value)}
-                      className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500"
-                    />
-                  </div>
+              <form onSubmit={handleCadastrarOperadorManual} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs items-end">
+                <div className="lg:col-span-2">
+                  <label className="block text-slate-400 font-semibold mb-1">Nome Completo</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Carlos Eduardo de Oliveira"
+                    value={novoOpNome}
+                    onChange={(e) => setNovoOpNome(e.target.value)}
+                    className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500 transition"
+                  />
+                </div>
 
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Veículo / Modalidade</label>
-                    <select
-                      value={novoOpVeiculo}
-                      onChange={(e) => {
-                        const v = e.target.value as any;
-                        setNovoOpVeiculo(v);
-                        if (v === 'Moto') setNovoOpMeta(METAS_PADRAO.metaMoto);
-                        else if (v === 'Carro') setNovoOpMeta(METAS_PADRAO.metaCarro);
-                        else setNovoOpMeta(METAS_PADRAO.metaPedestre);
-                      }}
-                      className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500"
-                    >
-                      <option value="Moto">Moto</option>
-                      <option value="Carro">Carro</option>
-                      <option value="Pedestre">Pedestre</option>
-                      <option value="Ajudante de Carro">Ajudante de Carro</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-slate-400 font-semibold mb-1">Veículo / Modalidade</label>
+                  <select
+                    value={novoOpVeiculo}
+                    onChange={(e) => {
+                      const v = e.target.value as any;
+                      setNovoOpVeiculo(v);
+                      if (v === 'Moto') setNovoOpMeta(METAS_PADRAO.metaMoto);
+                      else if (v === 'Carro') setNovoOpMeta(METAS_PADRAO.metaCarro);
+                      else setNovoOpMeta(METAS_PADRAO.metaPedestre);
+                    }}
+                    className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500 transition"
+                  >
+                    <option value="Moto">Moto</option>
+                    <option value="Carro">Carro</option>
+                    <option value="Pedestre">Pedestre</option>
+                    <option value="Ajudante de Carro">Ajudante de Carro</option>
+                  </select>
+                </div>
 
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Frente de Atuação</label>
-                    <select
-                      value={novoOpFrente}
-                      onChange={(e) => setNovoOpFrente(e.target.value)}
-                      className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500"
-                    >
-                      <option value="Cobrança Leste">Cobrança Leste</option>
-                      <option value="Cobrança Alto Tietê">Cobrança Alto Tietê</option>
-                      <option value="Irregularidade">Irregularidade</option>
-                      <option value="Hidrometria e Aferição">Hidrometria e Aferição</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-slate-400 font-semibold mb-1">Frente de Atuação</label>
+                  <select
+                    value={novoOpFrente}
+                    onChange={(e) => setNovoOpFrente(e.target.value)}
+                    className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500 transition"
+                  >
+                    <option value="Cobrança Leste">Cobrança Leste</option>
+                    <option value="Cobrança Alto Tietê">Cobrança Alto Tietê</option>
+                    <option value="Irregularidade">Irregularidade</option>
+                    <option value="Hidrometria e Aferição">Hidrometria e Aferição</option>
+                  </select>
+                </div>
 
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Meta Financeira Padrão (R$)</label>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-slate-400 font-semibold mb-1">Meta (R$)</label>
                     <input
                       type="number"
                       step="0.01"
                       value={novoOpMeta}
                       onChange={(e) => setNovoOpMeta(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500 font-mono"
+                      className="w-full bg-[#07090e] border border-[#1f293d] text-white p-2 rounded-lg outline-none focus:border-blue-500 font-mono transition"
                     />
                   </div>
-
                   <button
                     type="submit"
-                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg transition"
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-lg transition shadow h-[38px] shrink-0"
+                    title="Adicionar à equipe"
                   >
-                    Guardar no Banco Local
+                    Salvar
                   </button>
-                </form>
-              </div>
-
-              {/* Informações da Equipe & Ações Rápidas */}
-              <div className="lg:col-span-2 bg-[#0f1523] border border-[#1f293d] rounded-xl p-5 flex flex-col justify-between">
-                <div>
-                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                    <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <Database className="w-4 h-4 text-emerald-400" />
-                        Colaboradores Cadastrados no Banco Local ({equipe.length})
-                      </h3>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        Os dados da equipe ficam salvos no navegador via IndexedDB.
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={handleBaixarModeloEquipeExcel}
-                        className="text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-[#1f293d] px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition"
-                        title="Baixar modelo em Excel para preencher colaboradores"
-                      >
-                        <Download className="w-3.5 h-3.5 text-blue-400" />
-                        Modelo (.xlsx)
-                      </button>
-
-                      <label
-                        className="text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow"
-                        title="Subir planilha Excel com colaboradores, modalidade (moto/carro), frente e metas"
-                      >
-                        <FileSpreadsheet className="w-3.5 h-3.5" />
-                        Subir Equipe Excel (.xlsx)
-                        <input
-                          ref={fileInputEquipeRef}
-                          type="file"
-                          accept=".xlsx, .xls, .csv"
-                          className="hidden"
-                          onChange={handleImportarEquipeExcel}
-                        />
-                      </label>
-
-                      <button
-                        onClick={handleToggleModoEdicao}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition ${
-                          isModoEdicaoEquipe
-                            ? 'bg-red-500 text-white border-red-400'
-                            : 'bg-amber-500 text-slate-950 border-amber-400'
-                        }`}
-                      >
-                        {isModoEdicaoEquipe ? 'Cancelar Edição' : '✏️ Edição em Massa'}
-                      </button>
-
-                      {isModoEdicaoEquipe && (
-                        <button
-                          onClick={handleSalvarEdicaoMassa}
-                          className="text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition shadow"
-                        >
-                          💾 Salvar Tudo
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Search box */}
-                  <div className="mb-4">
-                    <input
-                      type="text"
-                      placeholder="🔍 Buscar operador por nome..."
-                      value={buscaEquipe}
-                      onChange={(e) => setBuscaEquipe(e.target.value)}
-                      className="w-full bg-[#07090e] border border-[#1f293d] text-white text-xs px-3 py-2 rounded-lg outline-none focus:border-blue-500"
-                    />
-                  </div>
                 </div>
-
-                {/* Team Table */}
-                <div className="overflow-x-auto max-h-[400px] border border-[#1f293d] rounded-lg">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="sticky top-0 bg-[#161f33] text-white border-b border-[#1f293d] z-10">
-                      <tr>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3">Nome</th>
-                        <th className="py-2.5 px-3">Veículo</th>
-                        <th className="py-2.5 px-3">Frente</th>
-                        <th className="py-2.5 px-3">Meta (R$)</th>
-                        <th className="py-2.5 px-3 text-right">Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#1f293d]/50">
-                      {equipe
-                        .filter((op) =>
-                          buscaEquipe ? normalize(op.nome).includes(normalize(buscaEquipe)) : true
-                        )
-                        .map((op) => {
-                          const norm = op.nomeNormalizado;
-                          const bufferOp = edicaoEquipeBuffer[norm] || op;
-
-                          return (
-                            <tr key={norm} className="hover:bg-slate-800/20">
-                              <td className="py-2.5 px-3">
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                    op.ativo !== false
-                                      ? 'bg-emerald-500/20 text-emerald-300'
-                                      : 'bg-red-500/20 text-red-300'
-                                  }`}
-                                >
-                                  {op.ativo !== false ? 'Ativo' : 'Inativo'}
-                                </span>
-                              </td>
-
-                              <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">{op.nome}</td>
-
-                              <td className="py-2.5 px-3">
-                                {isModoEdicaoEquipe ? (
-                                  <select
-                                    value={bufferOp.veiculo}
-                                    onChange={(e) => {
-                                      const val = e.target.value as any;
-                                      setEdicaoEquipeBuffer((prev) => ({
-                                        ...prev,
-                                        [norm]: {
-                                          ...prev[norm],
-                                          veiculo: val,
-                                          meta:
-                                            val === 'Moto'
-                                              ? METAS_PADRAO.metaMoto
-                                              : val === 'Carro'
-                                              ? METAS_PADRAO.metaCarro
-                                              : METAS_PADRAO.metaPedestre
-                                        }
-                                      }));
-                                    }}
-                                    className="bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs"
-                                  >
-                                    <option value="Moto">Moto</option>
-                                    <option value="Carro">Carro</option>
-                                    <option value="Pedestre">Pedestre</option>
-                                    <option value="Ajudante de Carro">Ajudante</option>
-                                  </select>
-                                ) : (
-                                  <span className="text-slate-300">{op.veiculo}</span>
-                                )}
-                              </td>
-
-                              <td className="py-2.5 px-3">
-                                {isModoEdicaoEquipe ? (
-                                  <select
-                                    value={bufferOp.frente}
-                                    onChange={(e) => {
-                                      const val = e.target.value as any;
-                                      setEdicaoEquipeBuffer((prev) => ({
-                                        ...prev,
-                                        [norm]: { ...prev[norm], frente: val }
-                                      }));
-                                    }}
-                                    className="bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs"
-                                  >
-                                    <option value="Cobrança Leste">Cobrança Leste</option>
-                                    <option value="Cobrança Alto Tietê">Cobrança Alto Tietê</option>
-                                    <option value="Irregularidade">Irregularidade</option>
-                                    <option value="Hidrometria e Aferição">Hidrometria</option>
-                                  </select>
-                                ) : (
-                                  <span className="text-slate-400">{op.frente}</span>
-                                )}
-                              </td>
-
-                              <td className="py-2.5 px-3 font-mono">
-                                {isModoEdicaoEquipe ? (
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={bufferOp.meta}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value) || 0;
-                                      setEdicaoEquipeBuffer((prev) => ({
-                                        ...prev,
-                                        [norm]: { ...prev[norm], meta: val }
-                                      }));
-                                    }}
-                                    className="w-24 bg-[#07090e] border border-blue-500 text-white p-1 rounded text-xs font-mono"
-                                  />
-                                ) : (
-                                  <span className="text-slate-300">R$ {formatMoney(op.meta)}</span>
-                                )}
-                              </td>
-
-                              <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                                <button
-                                  onClick={() => handleAlternarStatusOperador(norm)}
-                                  className="text-xs text-slate-400 hover:text-white mr-2"
-                                >
-                                  {op.ativo !== false ? 'Inativar' : 'Reativar'}
-                                </button>
-                                <button
-                                  onClick={() => handleExcluirOperador(norm)}
-                                  className="text-xs text-red-400 hover:text-red-300 font-bold"
-                                >
-                                  Excluir
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              </form>
             </div>
           </div>
         )}
@@ -6047,6 +7465,12 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
         operadorInicial={operadorParaComparar}
       />
 
+      {/* Modal Tabela Oficial DE -> PARA (Item 3.5 do Edital) */}
+      <ModalTabelaDePara
+        isOpen={modalTabelaDeParaOpen}
+        onClose={() => setModalTabelaDeParaOpen(false)}
+      />
+
       {/* Modal Detalhado de Reposição de Piso */}
       {modalReposicaoPisoOpen && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -6076,6 +7500,74 @@ ${frenteFiltro !== 'GLOBAL' ? `🏢 *FRENTE: ${frenteFiltro}*\n` : ''}
           </div>
         </div>
       )}
+
+      {/* Modal de Edição / Cadastro Individual de Operador */}
+      <ModalEditarOperador
+        isOpen={modalEditarOperadorOpen}
+        isNovo={isNovoOperadorModal}
+        operador={operadorParaEditar}
+        onClose={() => setModalEditarOperadorOpen(false)}
+        onSalvar={handleSalvarOperadorIndividual}
+      />
+
+      {/* Modal de Cadastro Rápido de Colaboradores em Lote */}
+      <ModalCadastroRapidoOperadores
+        isOpen={modalCadastroRapidoLoteOpen}
+        onClose={() => setModalCadastroRapidoLoteOpen(false)}
+        onCadastrarLote={handleCadastrarOperadoresLote}
+      />
+
+      {/* Modal de Ajuste Rápido de Equipe em 1 Clique */}
+      <ModalAjusteRapidoEquipe
+        isOpen={modalAjusteRapidoEquipeOpen}
+        onClose={() => setModalAjusteRapidoEquipeOpen(false)}
+        totalOperadores={equipe.length || producaoOperadores.length}
+        totalApoioExterno={equipe.filter((e) => e.tipoEquipe === 'APOIO_EXTERNO').length}
+        onAplicarAjusteMassa={async (config) => {
+          const baseLista = equipe.length > 0 ? equipe : producaoOperadores.map((p) => ({
+            nomeNormalizado: p.nomeNormalizado,
+            nome: p.nome,
+            veiculo: config.veiculo,
+            frente: config.frente,
+            tipoEquipe: config.tipoEquipe,
+            meta: config.meta,
+            percComissao: 0.1,
+            ativo: true
+          }));
+
+          const novos = baseLista.map((op) => ({
+            ...op,
+            tipoEquipe: config.tipoEquipe,
+            frente: config.frente,
+            veiculo: config.veiculo,
+            meta: config.meta,
+            percComissao: (op as any).percComissao ?? 0.1
+          }));
+
+          await salvarEquipeEmLote(novos);
+          const atualizados = await carregarEquipe();
+          setEquipe(atualizados);
+          setProducaoOperadores((prev) =>
+            prev.map((p) => ({
+              ...p,
+              frente: config.frente,
+              veiculo: config.veiculo,
+              tipoEquipe: config.tipoEquipe,
+              meta: config.meta
+            }))
+          );
+          setModalAjusteRapidoEquipeOpen(false);
+          showToast('✅ Equipe atualizada com sucesso em lote!');
+        }}
+        onAbrirCadastroIndividual={() => {
+          setModalAjusteRapidoEquipeOpen(false);
+          handleAbrirNovoOperador();
+        }}
+        onAbrirImportacaoExcel={() => {
+          setModalAjusteRapidoEquipeOpen(false);
+          setModalCadastroRapidoLoteOpen(true);
+        }}
+      />
     </div>
   );
 }

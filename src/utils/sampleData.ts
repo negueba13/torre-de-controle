@@ -169,6 +169,83 @@ export const EXECUCOES_DEMO = [
     'Data de Competência': '25/09/2026',
     'Município': 'Mogi das Cruzes',
     'Bairro': 'Braz Cubas'
+  },
+  {
+    'Número OS': 'OS-90011',
+    'PDE': '0000000170',
+    'Descrição TSS': 'NEGOCIAÇÃO DE DÉBITOS VIA POS',
+    'Resultado': 'PAGAMENTO EFETIVADO VIA POS',
+    'Equipe': 'Carlos Oliveira',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'Mogi das Cruzes',
+    'Bairro': 'Centro'
+  },
+  {
+    'Número OS': 'OS-90012',
+    'PDE': '0000000180',
+    'Descrição TSS': 'NEGOCIAÇÃO DE DÉBITOS VIA POS',
+    'Resultado': 'NEGOCIAÇÃO INFRUTÍFERA',
+    'Equipe': 'Carlos Oliveira',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'Mogi das Cruzes',
+    'Bairro': 'Jundiapeba'
+  },
+  {
+    'Número OS': 'OS-90013',
+    'PDE': '0000000190',
+    'Descrição TSS': 'CORTE DE LIGAÇÃO DE ÁGUA',
+    'Resultado': 'PAGAMENTO EFETIVADO VIA POS',
+    'Equipe': 'Joãozinho Silva',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'São Paulo - Leste',
+    'Bairro': 'Itaquera'
+  },
+  {
+    'Número OS': 'OS-90014',
+    'PDE': '0000000200',
+    'Descrição TSS': 'CORTE DE LIGAÇÃO DE ÁGUA',
+    'Resultado': 'NEGOCIAÇÃO INFRUTÍFERA',
+    'Equipe': 'Pedrinho Santos',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'São Paulo - Leste',
+    'Bairro': 'São Mateus'
+  },
+  {
+    'Número OS': 'OS-90015',
+    'PDE': '0000000210',
+    'Descrição TSS': 'NEGOCIAÇÃO DE DÉBITOS VIA POS',
+    'Resultado': 'PAGAMENTO EFETIVADO VIA PIX',
+    'Equipe': 'Carlos Oliveira',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'Mogi das Cruzes',
+    'Bairro': 'Centro'
+  },
+  {
+    'Número OS': 'OS-90016',
+    'PDE': '0000000220',
+    'Descrição TSS': 'CORTE DE LIGAÇÃO DE ÁGUA',
+    'Resultado': 'CLIENTE EFETUOU PGTO VIA PIX',
+    'Equipe': 'Joãozinho Silva',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'São Paulo - Leste',
+    'Bairro': 'Penha'
+  },
+  {
+    'Número OS': 'OS-90017',
+    'PDE': '0000000230',
+    'Descrição TSS': 'CORTE DE LIGAÇÃO DE ÁGUA',
+    'Resultado': 'CLIENTE APRESENTOU AS FATURAS PAGAS',
+    'Equipe': 'Renato Souza',
+    'Data': '27/09/2026',
+    'Data de Competência': '26/09/2026',
+    'Município': 'São Paulo - Leste',
+    'Bairro': 'Itaquera'
   }
 ];
 

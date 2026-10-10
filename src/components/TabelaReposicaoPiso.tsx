@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { formatMoney } from '../utils/pdeCleaner';
+import { PaginationControls, usePagination } from './Pagination';
 
 interface TabelaReposicaoPisoProps {
   reposicoes: ReposicaoPisoItem[];
@@ -55,6 +56,12 @@ export const TabelaReposicaoPiso: React.FC<TabelaReposicaoPisoProps> = ({
   const reincidentesCount = useMemo(() => {
     return filtrados.filter((r) => r.reincidente).length;
   }, [filtrados]);
+  const {
+    currentPage,
+    totalPages,
+    pageItems,
+    setCurrentPage
+  } = usePagination(filtrados, 50, `${frenteFiltro}|${searchTerm}|${apenasReincidentes}`);
 
   const exportarExcel = () => {
     if (filtrados.length === 0) {
@@ -188,7 +195,7 @@ export const TabelaReposicaoPiso: React.FC<TabelaReposicaoPisoProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#1f293d]/50">
-              {filtrados.map((item) => (
+              {pageItems.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-800/40 transition">
                   <td className="py-2.5 px-3 font-mono font-bold text-amber-400 whitespace-nowrap">
                     {item.os}
@@ -242,6 +249,12 @@ export const TabelaReposicaoPiso: React.FC<TabelaReposicaoPisoProps> = ({
           </table>
         </div>
       </div>
+      <PaginationControls
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalItems={filtrados.length}
+        onPageChange={setCurrentPage}
+      />
     </div>
   );
 };

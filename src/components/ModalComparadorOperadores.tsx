@@ -58,6 +58,7 @@ export const ModalComparadorOperadores: React.FC<ModalComparadorOperadoresProps>
       texto += `👤 *#${idx + 1} - ${op.nome}* (${op.veiculo} • ${op.frente})\n`;
       texto += `• Total OS: ${op.totalOS} | Taxa de Sucesso Real: ${op.percSucesso.toFixed(1)}%\n`;
       texto += `• ✂️ Cortes: ${op.cortes || 0} | 🔒 Supressões: ${op.supressoes || 0}\n`;
+      texto += `• 💧 Restabes / Religações: ${(op.restabes || 0) + (op.religacoes || 0)}\n`;
       texto += `• 💳 Negociações POS: ${op.negociacoesPOS || 0} | 🧱 Pisos: ${op.reposicoesPiso || 0}\n`;
       texto += `• ❌ Infrutíferas: ${op.infrutiferas} (Fim do dia expurgado: ${op.fimDoDiaCount})\n`;
       texto += `• 💰 Faturado: R$ ${formatMoney(op.faturado)} (Meta: ${op.atingimentoMeta.toFixed(1)}%)\n`;
@@ -230,6 +231,16 @@ export const ModalComparadorOperadores: React.FC<ModalComparadorOperadoresProps>
                       </span>
                       <span className="font-mono font-bold text-slate-200">
                         {op.supressoes || 0}
+                      </span>
+                    </div>
+
+                    {/* Restabes / Religações (Unificado) */}
+                    <div className="bg-[#07090e] border border-teal-500/30 rounded-lg p-2.5 flex items-center justify-between">
+                      <span className="text-teal-300 font-bold flex items-center gap-1.5">
+                        💧 Restabes / Religações:
+                      </span>
+                      <span className="font-mono font-bold text-teal-300">
+                        {(op.restabes || 0) + (op.religacoes || 0)}
                       </span>
                     </div>
 
